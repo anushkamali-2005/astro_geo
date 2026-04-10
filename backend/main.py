@@ -1,6 +1,9 @@
 from fastapi import FastAPI
 from backend.routers import iss, asteroids
 from backend.config import settings
+from backend.orchestrator.langgraph_agent import run_query
+from fastapi import HTTPException
+import time
 
 app = FastAPI(
     title=settings.API_TITLE,
@@ -12,13 +15,28 @@ app.include_router(iss.router)
 app.include_router(asteroids.router)
 
 from pydantic import BaseModel
+from typing import Optional
 from backend.agents.astronomy.astronomy_agent import AstronomyAgent
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage
 import os
+import hashlib
+from sqlalchemy import create_engine, text
 from dotenv import load_dotenv
 
-load_dotenv()
+# Load backend/.env explicitly (script runs from project root)
+_dotenv_path = os.path.join(os.path.dirname(__file__), '.env')
+load_dotenv(_dotenv_path)
+
+
+def _get_engine():
+    """Build a SQLAlchemy engine from individual DB_* env vars."""
+    url = (
+        f"postgresql://{os.getenv('DB_USER')}:{os.getenv('DB_PASSWORD', '')}"
+        f"@{os.getenv('DB_HOST', 'localhost')}:{os.getenv('DB_PORT', '5432')}"
+        f"/{os.getenv('DB_NAME')}"
+    )
+    return create_engine(url, pool_pre_ping=True)
 
 agent = AstronomyAgent()
 
@@ -109,3 +127,268 @@ async def query_agent(request: QueryRequest):
         
     except Exception as e:
         return {"error": str(e)}
+
+class GraphQueryRequest(BaseModel):
+    query: str
+    include_evidence: bool = True
+
+class GraphQueryResponse(BaseModel):
+    query:          str
+    domain:         str
+    answer:         str
+    evidence_chain: list
+    processing_time_ms: int
+
+@app.post("/api/graph/query", response_model=GraphQueryResponse)
+async def graph_query(request: GraphQueryRequest):
+    """
+    Natural language cross-domain query endpoint.
+    Routes through LangGraph: Router → Domain Agents → GraphRAG → Synthesiser.
+    Supports astronomy, geospatial, solar weather, and cross-domain queries.
+    """
+    if not request.query.strip():
+        raise HTTPException(status_code=400, detail="Query cannot be empty")
+
+    if len(request.query) > 500:
+        raise HTTPException(status_code=400, detail="Query too long (max 500 chars)")
+
+    start = time.time()
+
+    try:
+        result = run_query(request.query)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Agent error: {str(e)}")
+
+    elapsed_ms = int((time.time() - start) * 1000)
+
+    return GraphQueryResponse(
+        query=request.query,
+        domain=result.get('query_domain', 'unknown'),
+        answer=result.get('final_answer', 'No answer generated'),
+        evidence_chain=result.get('evidence_chain', []) if request.include_evidence else [],
+        processing_time_ms=elapsed_ms,
+    )
+
+
+# ═══════════════════════════════════════════════════════════════
+# Verification + Model Card endpoints
+# ═══════════════════════════════════════════════════════════════
+
+# ── Pydantic models ───────────────────────────────────────────
+class VerificationResult(BaseModel):
+    prediction_id:       str
+    asteroid_id:         str
+    verification_hash:   str
+    hash_valid:          bool
+    risk_category:       str
+    anomaly_score:       float
+    is_anomaly:          bool
+    cluster:             int
+    improved_risk_score: float
+    evidence_chain:      list
+    verification_status: str
+
+class BatchVerificationResult(BaseModel):
+    total:    int
+    verified: int
+    failed:   int
+    results:  list
+
+
+MODEL_VERSION = "astrogeo-asteroid-v1.0"  # must match fix_verification_hashes.py
+
+
+def recompute_hash(row: dict) -> str:
+    """
+    Deterministic SHA-256 over fixed inputs + pinned model version.
+    Identical to compute_deterministic_hash() in fix_verification_hashes.py.
+    If this matches the stored verification_hash the prediction is untampered.
+    """
+    hash_input = (
+        f"{row['asteroid_id']}"
+        f"{float(row['improved_risk_score']):.6f}"
+        f"{float(row['anomaly_score']):.6f}"
+        f"{int(row['cluster'])}"
+        f"{str(row['is_anomaly'])}"
+        f"{row['risk_category']}"
+        f"{MODEL_VERSION}"
+    )
+    return hashlib.sha256(hash_input.encode('utf-8')).hexdigest()
+
+
+# ── GET /api/verify/model-cards ─────────────────────────────
+# Must come BEFORE /{prediction_id} to avoid path collision
+@app.get("/api/verify/model-cards")
+async def list_model_cards():
+    """Returns available model cards for the Verify UI."""
+    cards_dir = os.path.join(os.path.dirname(__file__), 'data', 'model_cards')
+
+    model_meta = {
+        "asteroid_anomaly_detection.md": {
+            "name":      "Asteroid Anomaly Detection",
+            "algorithm": "Isolation Forest",
+            "accuracy":  "5% contamination rate",
+            "status":    "Production",
+        },
+        "asteroid_clustering.md": {
+            "name":      "Asteroid Behavioural Clustering",
+            "algorithm": "KMeans (k=3)",
+            "accuracy":  "3 stable clusters",
+            "status":    "Production",
+        },
+        "geospatial_vegetation.md": {
+            "name":      "Vegetation Change Detection",
+            "algorithm": "Random Forest",
+            "accuracy":  "82% test accuracy",
+            "status":    "Production",
+        },
+    }
+
+    cards = []
+    for filename, meta in model_meta.items():
+        filepath = os.path.join(cards_dir, filename)
+        content  = ""
+        if os.path.exists(filepath):
+            with open(filepath, 'r') as f:
+                content = f.read()
+        cards.append({"filename": filename, "content": content, **meta})
+
+    return {"model_cards": cards}
+
+
+# ── GET /api/verify/{prediction_id} ──────────────────────────
+@app.get("/api/verify/{prediction_id}", response_model=VerificationResult)
+async def verify_prediction(prediction_id: str):
+    """
+    Fetches a single asteroid prediction and verifies its SHA-256 hash.
+    Powers the Verify Predictions page in the Streamlit POC.
+    """
+    engine = _get_engine()
+    try:
+        with engine.connect() as conn:
+            result = conn.execute(text("""
+                SELECT asteroid_id,
+                       risk_category,
+                       improved_risk_score,
+                       is_anomaly,
+                       anomaly_score,
+                       cluster,
+                       verification_hash
+                FROM astronomy.asteroid_ml_predictions
+                WHERE asteroid_id = :pid
+                LIMIT 1
+            """), {"pid": prediction_id}).fetchone()
+
+        if not result:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Prediction '{prediction_id}' not found"
+            )
+
+        row        = dict(result._mapping)
+        recomputed = recompute_hash(row)
+        stored     = row.get('verification_hash', '')
+        valid      = (recomputed == stored)
+
+        evidence_chain = [
+            {
+                "step":   "Data Retrieval",
+                "source": "PostgreSQL astronomy.asteroid_ml_predictions",
+                "status": "\u2705 Retrieved",
+            },
+            {
+                "step":   "Model Processing",
+                "detail": f"IsolationForest + KMeans | "
+                          f"Cluster {row['cluster']} | "
+                          f"Anomaly: {row['is_anomaly']}",
+                "status": "\u2705 Processed",
+            },
+            {
+                "step":   "Hash Verification",
+                "detail": f"Stored hash: {stored[:32]}...",
+                "status": "\u2705 Verified" if valid else "\u274c MISSING",
+            },
+            {
+                "step":   "Output",
+                "detail": f"Risk: {row['risk_category']} | "
+                          f"Score: {row['improved_risk_score']:.4f}",
+                "status": "\u2705 Complete",
+            },
+        ]
+
+        return VerificationResult(
+            prediction_id=       prediction_id,
+            asteroid_id=         row['asteroid_id'],
+            verification_hash=   stored,
+            hash_valid=          valid,
+            risk_category=       row.get('risk_category') or '',
+            anomaly_score=       float(row.get('anomaly_score') or 0),
+            is_anomaly=          bool(row.get('is_anomaly')),
+            cluster=             int(row.get('cluster') or 0),
+            improved_risk_score= float(row.get('improved_risk_score') or 0),
+            evidence_chain=      evidence_chain,
+            verification_status= "Verified" if valid else "MISSING_HASH",
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        engine.dispose()
+
+
+# ── GET /api/verify/batch/recent ─────────────────────────────
+@app.get("/api/verify/batch/recent", response_model=BatchVerificationResult)
+async def verify_recent_predictions(limit: int = 10):
+    """
+    Verifies the N highest-risk predictions in bulk.
+    Powers the Recent Predictions list in the Verify UI.
+    """
+    engine = _get_engine()
+    try:
+        with engine.connect() as conn:
+            rows = conn.execute(text("""
+                SELECT asteroid_id,
+                       risk_category,
+                       improved_risk_score,
+                       is_anomaly,
+                       anomaly_score,
+                       cluster,
+                       verification_hash
+                FROM astronomy.asteroid_ml_predictions
+                ORDER BY improved_risk_score DESC
+                LIMIT :limit
+            """), {"limit": limit}).fetchall()
+
+        results  = []
+        verified = 0
+        failed   = 0
+
+        for row in rows:
+            r     = dict(row._mapping)
+            valid = (recompute_hash(r) == (r.get('verification_hash') or ''))
+            if valid:
+                verified += 1
+            else:
+                failed += 1
+            results.append({
+                "asteroid_id":         r['asteroid_id'],
+                "risk_category":       r.get('risk_category') or '',
+                "improved_risk_score": float(r.get('improved_risk_score') or 0),
+                "is_anomaly":          bool(r.get('is_anomaly')),
+                "verification_status": "Verified" if valid else "MISSING_HASH",
+                "hash_preview":        (r.get('verification_hash') or '')[:16] + "...",
+            })
+
+        return BatchVerificationResult(
+            total=    len(results),
+            verified= verified,
+            failed=   failed,
+            results=  results,
+        )
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        engine.dispose()

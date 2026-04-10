@@ -15,3 +15,12 @@ backend/config/.cdsapirc
 # Models & Large Data
 backend/models/*.pkl
 backend/data/*.csv
+data/
+*.nc
+*.pkl
+*.csv
+.ipynb_checkpoints/
+data/shap/
+data/models/
+data/launches/
+data/era5/
