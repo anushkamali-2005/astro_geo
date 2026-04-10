@@ -34,7 +34,7 @@ except Exception as _e:
 # ─────────────────────────────────────────────
 DB_HOST = os.getenv('DB_HOST', 'localhost')
 DB_PORT = os.getenv('DB_PORT', '5432')
-DB_NAME = os.getenv('DB_NAME', 'astrogeo')
+DB_NAME = os.getenv('DB_NAME', 'astro_geo')
 DB_USER = os.getenv('DB_USER', 'postgres')
 DB_PASSWORD = os.getenv('DB_PASSWORD', '')
 TABLE_NAME = os.getenv('TABLE_NAME', 'launch_predictions')
