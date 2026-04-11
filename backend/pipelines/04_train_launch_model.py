@@ -275,6 +275,7 @@ def save_predictions(df, ensemble, scaler, feature_cols):
             CREATE TABLE IF NOT EXISTS launch_predictions (
                 id                  SERIAL PRIMARY KEY,
                 mission             TEXT,
+                vehicle             TEXT,
                 date                DATE,
                 launch_site         TEXT,
                 launch_probability  FLOAT,
@@ -289,17 +290,19 @@ def save_predictions(df, ensemble, scaler, feature_cols):
             try:
                 conn.execute(text("""
                     INSERT INTO launch_predictions
-                        (mission, date, launch_site,
+                        (mission, vehicle, date, launch_site,
                          launch_probability, predicted_outcome,
                          model_version)
-                    VALUES (:mission, :date, :site, :prob, :outcome, :ver)
+                    VALUES (:mission, :vehicle, :date, :site, :prob, :outcome, :ver)
                     ON CONFLICT (mission, date)
                     DO UPDATE SET
+                        vehicle            = EXCLUDED.vehicle,
                         launch_probability = EXCLUDED.launch_probability,
                         predicted_outcome  = EXCLUDED.predicted_outcome,
                         model_version      = EXCLUDED.model_version
                 """), {
                     'mission': row['mission'],
+                    'vehicle': row['vehicle'],
                     'date':    row['date'],
                     'site':    row['launch_site'],
                     'prob':    float(row['launch_probability']),
