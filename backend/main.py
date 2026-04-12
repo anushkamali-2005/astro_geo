@@ -11,6 +11,15 @@ app = FastAPI(
     version=settings.API_VERSION
 )
 
+from prometheus_fastapi_instrumentator import Instrumentator
+import prometheus_client
+
+# Instrument FastAPI with Prometheus metrics
+Instrumentator().instrument(app).expose(app)
+
+# Custom metric: Launch Probability Gauge
+launch_prob_gauge = prometheus_client.Gauge('launch_probability', 'Predicted launch probability score')
+
 # ── CORS — allow Next.js frontend ─────────────────────────────
 app.add_middleware(
     CORSMiddleware,
@@ -791,6 +800,9 @@ async def get_launch_probability():
         else:
             # Fallback if model not loaded
             probability = 0.82
+
+        # Update the Prometheus Gauge
+        launch_prob_gauge.set(probability)
 
         risk_level = (
             "High Risk"   if probability < 0.35 else
