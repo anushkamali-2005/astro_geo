@@ -1,4 +1,5 @@
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from backend.routers import iss, asteroids
 from backend.config import settings
 from backend.orchestrator.langgraph_agent import run_query
@@ -8,6 +9,18 @@ import time
 app = FastAPI(
     title=settings.API_TITLE,
     version=settings.API_VERSION
+)
+
+# ── CORS — allow Next.js frontend ─────────────────────────────
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:3000",
+        "http://localhost:3001",
+        "http://127.0.0.1:3000",
+    ],
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 # Include routers
@@ -488,7 +501,12 @@ async def get_live_ndvi(zone: str, year: int):
             "zone":   zone,
             "year":   year,
             "source": source,
-            "data":   rows,
+            "results": rows,
+            "summary": {
+                "mean_ndvi":      float(np.mean([r['ndvi_mean'] for r in rows])) if rows else 0,
+                "dominant_class": rows[0]['change_class_label'] if rows else 'unknown',
+                "avg_confidence": float(np.mean([r['confidence'] for r in rows])) if rows else 0,
+            }
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
