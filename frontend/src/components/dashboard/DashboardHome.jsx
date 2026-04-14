@@ -95,7 +95,7 @@ export default function DashboardHome() {
         setPredictions(prev => {
           const entry = {
             id:     '1',
-            title:  `Asteroid ${topAsteroid.designation ?? topAsteroid.des ?? '2024 BX1'} — close approach`,
+            title:  `Asteroid ${topAsteroid.designation ?? topAsteroid.des ?? 'Unknown'} — ML Threat Model`,
             status: 'Verified',
             tone:   'verified',
             meta:   `Risk: ${topAsteroid.risk_category ?? 'Low'} · Score: ${topAsteroid.improved_risk_score?.toFixed(2) ?? 'N/A'}`,

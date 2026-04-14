@@ -67,6 +67,8 @@ export const api = {
   
   // ── ISRO tracker ──────────────────────────────────────────
   getIsroFleet:      () => get('/api/isro/fleet'),
+  getNaviCFleet:     () => get('/api/isro/navic'),
+  getISROArchive:    () => get('/api/isro/archive'),
 
   // ── GraphRAG ──────────────────────────────────────────────
   query: (q) =>

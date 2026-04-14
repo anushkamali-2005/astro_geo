@@ -54,15 +54,7 @@ function getVisibilityRating(maxElevation) {
   return { label: 'POOR', color: 'text-red-400', icon: '❌' }
 }
 
-function mockAIConfidence(pass) {
-  // Mock based on elevation and time
-  const elevation = pass.maxElevation
-  const now = Date.now() / 1000
-  const timeDiff = Math.abs(pass.startTime - now)
-  let confidence = 50 + (elevation / 90) * 40 - (timeDiff / 86400) * 10 // Rough mock
-  confidence = Math.max(10, Math.min(95, confidence))
-  return Math.round(confidence)
-}
+ 
 
 export default function SatellitePassPredictor() {
   const { homeCity } = useAppShell()
@@ -110,7 +102,48 @@ export default function SatellitePassPredictor() {
 
   useEffect(() => {
     fetchPasses()
-  }, [location, satellite, dateRange, filters])
+  }, [location, satellite, dateRange]) // removed filters from dependencies to avoid API spam
+
+  // Client-side filtering
+  const filteredPasses = passes.filter(pass => {
+    const maxEl = pass.maxElevation || pass.maxEl || 0
+    if (maxEl < filters.minElevation) return false
+
+    // Night passes: between 18:00 and 06:00
+    if (filters.nightOnly) {
+      const startTime = pass.startTime || pass.startUTC || 0
+      const date = new Date(startTime * 1000)
+      const hour = date.getHours()
+      if (hour >= 6 && hour < 18) return false
+    }
+
+    // visibleOnly is largely redundant for N2YO visualpasses, but we can assume they are all visible if they have a start time
+    if (filters.visibleOnly) {
+      if (!pass.startUTC && !pass.startTime) return false
+    }
+
+    return true
+  })
+
+  const handleAddToCalendar = (pass) => {
+    const start = new Date((pass.startTime || pass.startUTC) * 1000)
+    const end = new Date((pass.endTime || pass.endUTC) * 1000)
+    
+    const formatDateForICS = (d) => {
+      return d.toISOString().replace(/[-:]/g, '').split('.')[0] + 'Z'
+    }
+
+    const icsContent = `BEGIN:VCALENDAR\nVERSION:2.0\nPRODID:-//AstroGeo//Satellite Pass Predictor//EN\nBEGIN:VEVENT\nUID:${start.getTime()}@astrogeo.xyz\nDTSTAMP:${formatDateForICS(new Date())}\nDTSTART:${formatDateForICS(start)}\nDTEND:${formatDateForICS(end)}\nSUMMARY:${satellite} Pass over ${location}\nDESCRIPTION:Visible satellite pass. Max elevation: ${pass.maxElevation || pass.maxEl}°.\\nLOCATION:${location}\nEND:VEVENT\nEND:VCALENDAR`
+
+    const blob = new Blob([icsContent], { type: 'text/calendar;charset=utf-8' })
+    const url = window.URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.setAttribute('download', `${satellite.replace(/\\s+/g, '_')}_Pass.ics`)
+    document.body.appendChild(link)
+    link.click()
+    link.parentNode.removeChild(link)
+  }
 
   return (
     <motion.div
@@ -222,19 +255,21 @@ export default function SatellitePassPredictor() {
             </div>
           )}
 
-          {passes.length === 0 && !loading && !error && (
+          {filteredPasses.length === 0 && !loading && !error && (
             <div className="text-slate-400 text-sm">
               No passes found for the selected criteria.
             </div>
           )}
 
           <div className="space-y-4 max-h-96 overflow-y-auto">
-            {passes.map((pass, index) => {
-              const visibility = getVisibilityRating(pass.maxElevation)
-              const aiConfidence = mockAIConfidence(pass)
-              const startDate = formatDate(pass.startTime)
-              const startTime = formatTime(pass.startTime)
-              const endTime = formatTime(pass.endTime)
+            {filteredPasses.map((pass, index) => {
+              const maxElevation = pass.maxElevation || pass.maxEl || 0
+              const startTime = pass.startTime || pass.startUTC || 0
+              const endTime = pass.endTime || pass.endUTC || 0
+              const visibility = getVisibilityRating(maxElevation)
+              const startDate = formatDate(startTime)
+              const startTimeStr = formatTime(startTime)
+              const endTimeStr = formatTime(endTime)
               const riseDir = getDirection(pass.startAz)
               const setDir = getDirection(pass.endAz)
 
@@ -242,7 +277,7 @@ export default function SatellitePassPredictor() {
                 <div key={index} className="bg-slate-800/40 border border-slate-700/50 rounded-xl p-4">
                   <div className="flex justify-between items-start mb-3">
                     <div className="text-sm font-bold text-white">
-                      {startDate} - {startTime}
+                      {startDate} - {startTimeStr}
                     </div>
                     <div className={`inline-block px-2 py-1 rounded text-xs font-bold uppercase tracking-wider ${visibility.color} border border-current/30`}>
                       {visibility.icon} {visibility.label}
@@ -251,26 +286,23 @@ export default function SatellitePassPredictor() {
                   
                   <div className="bg-slate-900/50 rounded-lg p-3 border border-slate-700/50 mb-3">
                     <div className="text-xs text-slate-400 mb-1">
-                      Rise: {startTime} ({riseDir}) → Set: {endTime} ({setDir})
+                      Rise: {startTimeStr} ({riseDir}) → Set: {endTimeStr} ({setDir})
                     </div>
                     <div className="text-xs text-slate-400">
-                      Max Elevation: {pass.maxElevation}° | Duration: {Math.round((pass.endTime - pass.startTime) / 60)} min
+                      Max Elevation: {maxElevation}° | Duration: {Math.round((endTime - startTime) / 60)} min
                     </div>
                   </div>
 
                   <div className="flex items-center justify-between">
-                    <div className="text-xs text-cyan-400 font-medium">
-                      🤖 AI Confidence: {aiConfidence}% (Mock prediction)
+                    <div className="text-xs text-slate-400">
+                      Duration: {Math.round((endTime - startTime) / 60)} minutes
                     </div>
                     <div className="flex gap-2">
-                      <button className="text-xs bg-slate-700 hover:bg-slate-600 px-2 py-1 rounded">
+                       <button className="text-xs bg-slate-700 hover:bg-slate-600 px-3 py-1.5 rounded transition-colors font-semibold text-white">
                         🔔 Set Reminder
                       </button>
-                      <button className="text-xs bg-slate-700 hover:bg-slate-600 px-2 py-1 rounded">
+                      <button onClick={() => handleAddToCalendar(pass)} className="text-xs bg-cyan-700 hover:bg-cyan-600 px-3 py-1.5 rounded transition-colors font-semibold text-white">
                         📅 Add to Calendar
-                      </button>
-                      <button className="text-xs bg-emerald-700 hover:bg-emerald-600 px-2 py-1 rounded">
-                        ✅ Verify Prediction
                       </button>
                     </div>
                   </div>

@@ -34,6 +34,19 @@ function VerifyTab() {
   const [hasAttempted, setHasAttempted]   = useState(false)
   const [recentIds, setRecentIds]         = useState([])
 
+  // Init searchId from URL if present
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      const urlParams = new URLSearchParams(window.location.search)
+      const verifyParam = urlParams.get('verify')
+      if (verifyParam) {
+        setSearchId(verifyParam)
+        // Automatically verify if we just arrived
+        handleVerify(verifyParam)
+      }
+    }
+  }, [])
+
   // Pre-load 3 recent IDs for the quick-click list
   useEffect(() => {
     api.verifyBatch(5).then(data => {
@@ -151,14 +164,9 @@ function VerifyTab() {
                 </button>
               )
             }) : (
-              // Static fallback
-              ['PRED-2025-DR821', 'PRED-2025-LN404', 'PRED-2025-ST119'].map((id, i) => (
-                <button key={i} onClick={() => { setSearchId(id); handleVerify(id) }}
-                  className="w-full flex justify-between items-center text-xs p-2 hover:bg-slate-800/50 rounded transition-colors text-left">
-                  <span className="font-mono text-cyan-400">{id}</span>
-                  <span className="text-slate-500">{['12 mins ago','1 hour ago','3 hours ago'][i]}</span>
-                </button>
-              ))
+              <div className="w-full text-center text-xs text-slate-500 py-4 italic">
+                Pulling recent signatures from ledger...
+              </div>
             )}
           </div>
         </GlassPanel>
