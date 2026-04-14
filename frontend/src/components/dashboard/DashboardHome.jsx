@@ -5,7 +5,7 @@ import { useState, useEffect } from 'react'
 import { motion } from 'framer-motion'
 import { Satellite, Orbit, Globe2, Rocket, Radio, ChevronRight, Sparkles } from 'lucide-react'
 import { Card, CardContent } from '@/components/ui/card'
-import { featureCards, recentPredictions as staticPredictions, issTicker as staticTicker } from '@/data/dashboardData'
+import { featureCards } from '@/data/dashboardData'
 import APOD from '@/components/APOD'
 import { cn } from '@/lib/cn'
 import { api } from '@/lib/api'
@@ -37,16 +37,24 @@ const item = {
 }
 
 export default function DashboardHome() {
-  const [ticker, setTicker]           = useState(staticTicker)
-  const [predictions, setPredictions] = useState(staticPredictions)
+  const [ticker, setTicker] = useState({
+    headline: 'ISS Position',
+    detail: 'Waiting for live ISS feed...',
+  })
+  const [predictions, setPredictions] = useState([])
 
   useEffect(() => {
     // Fire immediately — drives the ISS ticker in the hero
-    api.getISSPasses().then(passes => {
-      if (!passes?.length) return
+    api.getISSPasses().then((payload) => {
+      const passes = payload?.passes ?? []
+      if (!passes.length) return
       const next = passes[0]
       const time = next.risetime
         ? new Date(next.risetime * 1000).toLocaleTimeString('en-IN', {
+            hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Kolkata',
+          })
+        : next.rise_time
+        ? new Date(next.rise_time).toLocaleTimeString('en-IN', {
             hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Kolkata',
           })
         : '20:42 IST'
@@ -56,13 +64,17 @@ export default function DashboardHome() {
       })
 
       // Also use the ISS data immediately for predictions
-      setPredictions(prev => {
+      setPredictions((prev) => {
         const p    = passes[0]
         const t = p.risetime
           ? new Date(p.risetime * 1000).toLocaleTimeString('en-IN', {
               hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Kolkata',
             })
-          : '20:42'
+          : p.rise_time
+          ? new Date(p.rise_time).toLocaleTimeString('en-IN', {
+              hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Kolkata',
+            })
+          : '—'
         const issEntry = {
           id:     '3',
           title:  `ISS pass — max elevation ${p.maxelevation ?? p.max_el ?? 60}°`,
@@ -256,7 +268,11 @@ export default function DashboardHome() {
           viewport={{ once: true, margin: '-40px' }}
           className="max-h-[420px] space-y-3 overflow-y-auto pr-1"
         >
-          {predictions.map((p) => (
+          {predictions.length === 0 ? (
+            <Card className="border-white/10 bg-white/[0.03]">
+              <CardContent className="p-4 text-sm text-slate-400">No live predictions available right now.</CardContent>
+            </Card>
+          ) : predictions.map((p) => (
             <motion.div key={p.id} variants={item}>
               <Card className="border-white/10 bg-white/[0.03] transition hover:border-white/15">
                 <CardContent className="flex flex-col gap-3 p-4 sm:flex-row sm:items-center sm:justify-between">

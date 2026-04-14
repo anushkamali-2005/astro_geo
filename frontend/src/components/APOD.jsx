@@ -5,7 +5,7 @@ import Image from "next/image";
 import { motion } from "framer-motion";
 import { ExternalLink, Calendar, Star } from "lucide-react";
 
-const NASA_API_KEY = "DEMO_KEY"; // Replace with your actual NASA API key
+const NASA_API_KEY = process.env.NEXT_PUBLIC_NASA_API_KEY || "DEMO_KEY";
 
 export default function APOD() {
   const [apod, setApod] = useState(null);

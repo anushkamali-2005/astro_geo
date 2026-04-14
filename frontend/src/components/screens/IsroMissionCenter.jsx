@@ -165,25 +165,44 @@ const CHANDRAYAAN3_LANDING = new Date('2023-08-23T00:00:00Z')
 function ChandrayaanTab() {
   const daysOnMoon = Math.floor((Date.now() - CHANDRAYAAN3_LANDING) / (1000 * 60 * 60 * 24))
   return (
-    <motion.div initial={{opacity:0, y:10}} animate={{opacity:1, y:0}} exit={{opacity:0, y:-10}} className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-      
-      <div className="space-y-6">
-        <GlassPanel className="p-8 h-full bg-gradient-to-br from-[#111827]/80 to-indigo-900/20 relative overflow-hidden">
-          <div className="absolute top-0 right-0 p-8 opacity-20 transform scale-150 translate-x-12 -translate-y-12">
-            <span className="text-9xl">🌕</span>
+    <motion.div initial={{opacity:0, y:10}} animate={{opacity:1, y:0}} exit={{opacity:0, y:-10}} className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+      <div className="lg:col-span-7 space-y-6">
+        <GlassPanel className="p-6">
+          <h3 className="font-display font-bold text-lg text-white mb-1">📈 Launch Success/Failure Timeline</h3>
+          <p className="text-xs text-slate-400 mb-4">Based on the 108-mission launch history used for risk model training.</p>
+          <div className="space-y-3">
+            {timeline.map((t) => {
+              const total = t.success + t.failed
+              const successPct = Math.round((t.success / total) * 100)
+              return (
+                <div key={t.period}>
+                  <div className="flex justify-between text-xs text-slate-400 mb-1">
+                    <span>{t.period}</span>
+                    <span>{t.success}/{total} successful ({successPct}%)</span>
+                  </div>
+                  <div className="w-full h-2 rounded-full bg-slate-800 overflow-hidden">
+                    <div className="h-2 bg-emerald-500 inline-block" style={{ width: `${(t.success / total) * 100}%` }} />
+                    <div className="h-2 bg-rose-500 inline-block" style={{ width: `${(t.failed / total) * 100}%` }} />
+                  </div>
+                </div>
+              )
+            })}
           </div>
+        </GlassPanel>
 
-          <div className="flex justify-between items-start mb-8 relative z-10">
-            <div>
-              <h2 className="font-display font-bold text-3xl text-white mb-2 tracking-wide">🌙 CHANDRAYAAN-3</h2>
-              <p className="text-slate-400">Live Mission Tracker</p>
-            </div>
-            <div className="text-right">
-              <div className="inline-block px-3 py-1 bg-emerald-500/20 border border-emerald-500 border-dashed rounded text-emerald-400 font-bold text-sm mb-1">
-                OPERATIONAL ✅
+        <GlassPanel className="p-6">
+          <h3 className="font-display font-bold text-lg text-white mb-4">🚀 Vehicle-wise Reliability</h3>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            {vehicles.map((v) => (
+              <div key={v.name} className="bg-slate-900/60 border border-slate-700/50 rounded-xl p-4">
+                <div className="text-sm text-white font-semibold">{v.name}</div>
+                <div className="text-xs text-slate-400 mt-1">{v.missions} missions</div>
+                <div className="mt-3 text-2xl font-bold text-cyan-400">{v.successRate}%</div>
               </div>
-            </div>
+            ))}
           </div>
+        </GlassPanel>
+      </div>
 
           <div className="grid grid-cols-2 gap-4 mb-8 relative z-10">
             <div className="bg-slate-900/60 p-4 rounded-xl border border-slate-700/50">
@@ -195,14 +214,29 @@ function ChandrayaanTab() {
               <div className="text-xl font-display font-bold text-slate-300 mt-1">3 hours ago</div>
             </div>
           </div>
+          <p className="text-xs text-amber-300 mt-4">Monsoon season shows lower launch success in the historical training set.</p>
+        </GlassPanel>
 
-          <div className="flex gap-3 relative z-10 mt-10">
-            <button className="flex-1 bg-indigo-500 hover:bg-indigo-600 text-white font-semibold py-3 rounded-xl transition-colors shadow-[0_0_15px_rgba(99,102,241,0.4)]">📊 Mission Timeline</button>
-            <button className="flex-1 bg-slate-800 hover:bg-slate-700 text-white font-semibold py-3 rounded-xl transition-colors border border-slate-600">🔭 Scientific Data</button>
-            <button className="flex-1 bg-slate-800 hover:bg-slate-700 text-white font-semibold py-3 rounded-xl transition-colors border border-slate-600">📸 View Images</button>
+        <GlassPanel className="p-6">
+          <h3 className="font-display font-bold text-lg text-white mb-4">🧠 Top SHAP Drivers</h3>
+          <div className="space-y-3">
+            {shap.map((f) => (
+              <div key={f.feature}>
+                <div className="flex justify-between text-xs text-slate-400 mb-1">
+                  <span>{f.feature}</span>
+                  <span>{f.impact.toFixed(2)}</span>
+                </div>
+                <div className="w-full h-2 rounded-full bg-slate-800">
+                  <div className="h-2 rounded-full bg-indigo-500" style={{ width: `${f.impact * 100}%` }} />
+                </div>
+              </div>
+            ))}
           </div>
         </GlassPanel>
       </div>
+    </motion.div>
+  )
+}
 
       <div className="space-y-6">
         <GlassPanel className="p-6 border-l-4 border-l-cyan-500">
@@ -217,26 +251,101 @@ function ChandrayaanTab() {
           </div>
         </GlassPanel>
 
-        <GlassPanel className="p-6 border-l-4 border-l-orange-500">
-          <div className="flex justify-between items-center mb-6">
-            <h3 className="font-display font-bold text-xl text-white flex items-center gap-2">🤖 PRAGYAN ROVER</h3>
-            <span className="text-xs font-bold text-amber-500 bg-amber-500/10 px-2 py-1 rounded border border-amber-500/20">Hibernating</span>
+  return (
+    <motion.div initial={{opacity:0, y:10}} animate={{opacity:1, y:0}} exit={{opacity:0, y:-10}} className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+      <div className="lg:col-span-6 space-y-4">
+        {missions.map((m) => (
+          <GlassPanel key={m.title} className="p-5">
+            <div className="flex items-start justify-between">
+              <div>
+                <h3 className="text-lg font-display font-bold text-white">{m.title}</h3>
+                <p className="text-xs text-slate-400">{m.year} • {m.status}</p>
+              </div>
+            </div>
+            <p className="text-sm text-slate-300 mt-3">{m.highlight}</p>
+          </GlassPanel>
+        ))}
+      </div>
+
+      <div className="lg:col-span-6">
+        <GlassPanel className="p-6 h-full">
+          <h3 className="font-display font-bold text-lg text-white mb-4">🌙 Chandrayaan-3 Mission Facts</h3>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-5">
+            <div className="bg-slate-900/60 rounded-xl border border-slate-700/50 p-4">
+              <div className="text-xs text-slate-400">Landing date</div>
+              <div className="text-white font-semibold mt-1">23 Aug 2023</div>
+            </div>
+            <div className="bg-slate-900/60 rounded-xl border border-slate-700/50 p-4">
+              <div className="text-xs text-slate-400">Vikram coordinates</div>
+              <div className="text-white font-semibold mt-1">~69.37°S, 32.32°E</div>
+            </div>
+            <div className="bg-slate-900/60 rounded-xl border border-slate-700/50 p-4">
+              <div className="text-xs text-slate-400">Pragyan traverse</div>
+              <div className="text-white font-semibold mt-1">~103 metres</div>
+            </div>
+            <div className="bg-slate-900/60 rounded-xl border border-slate-700/50 p-4">
+              <div className="text-xs text-slate-400">Surface ops contact</div>
+              <div className="text-white font-semibold mt-1">Last contact Sep 2023</div>
+            </div>
           </div>
-          <div className="grid grid-cols-2 gap-4 text-sm mb-6">
-            <div className="bg-slate-800/40 p-3 rounded-xl border border-slate-700/50"><span className="text-slate-500 block text-xs">Distance Traveled</span><span className="text-white font-medium">118 meters</span></div>
-            <div className="bg-slate-800/40 p-3 rounded-xl border border-slate-700/50"><span className="text-slate-500 block text-xs">Battery</span><span className="text-emerald-400 font-medium">65%</span></div>
-          </div>
-          <div className="bg-slate-800/40 border border-slate-700/50 rounded-xl p-4">
-            <h4 className="text-xs text-orange-400 font-bold uppercase tracking-wider mb-3">Scientific Findings</h4>
+          <div className="bg-slate-900/60 border border-slate-700/50 rounded-xl p-4">
+            <h4 className="text-sm font-semibold text-cyan-300 mb-2">Key findings</h4>
             <ul className="text-sm text-slate-300 space-y-2">
-              <li className="flex items-start gap-2"><span className="text-orange-500 mt-0.5">•</span> Sulfur definitively detected on lunar surface</li>
-              <li className="flex items-start gap-2"><span className="text-orange-500 mt-0.5">•</span> Vertical temperature gradient measured accurately</li>
-              <li className="flex items-start gap-2"><span className="text-orange-500 mt-0.5">•</span> 15 major elements identified via LIBS instrument</li>
+              <li>• Sulfur and multiple elements identified in-situ by LIBS.</li>
+              <li>• Near-surface thermal profile measured in the polar region.</li>
+              <li>• First successful soft landing near the Moon's south polar area by India.</li>
             </ul>
           </div>
         </GlassPanel>
       </div>
+    </motion.div>
+  )
+}
 
+// ── Option 4: NavIC Constellation Status ────────────────────────
+function NavICTab() {
+  const navicSats = [
+    'IRNSS-1B', 'IRNSS-1C', 'IRNSS-1D', 'IRNSS-1E', 'IRNSS-1F', 'IRNSS-1G', 'NVS-01',
+  ]
+  return (
+    <motion.div initial={{opacity:0, y:10}} animate={{opacity:1, y:0}} exit={{opacity:0, y:-10}} className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+      <div className="lg:col-span-7">
+        <GlassPanel className="p-6 h-full">
+          <h3 className="font-display font-bold text-lg text-white mb-2">🧭 NavIC / Indian Constellation Status</h3>
+          <p className="text-xs text-slate-400 mb-5">Regional navigation service focused on India and nearby region.</p>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div className="bg-slate-900/60 border border-slate-700/50 rounded-xl p-4">
+              <div className="text-xs text-slate-400">Constellation size</div>
+              <div className="text-2xl font-bold text-white mt-1">7 satellites</div>
+            </div>
+            <div className="bg-slate-900/60 border border-slate-700/50 rounded-xl p-4">
+              <div className="text-xs text-slate-400">Service status</div>
+              <div className="text-2xl font-bold text-emerald-400 mt-1">Operational</div>
+            </div>
+            <div className="bg-slate-900/60 border border-slate-700/50 rounded-xl p-4">
+              <div className="text-xs text-slate-400">India coverage</div>
+              <div className="text-white font-semibold mt-1">Primary</div>
+            </div>
+            <div className="bg-slate-900/60 border border-slate-700/50 rounded-xl p-4">
+              <div className="text-xs text-slate-400">Use-case tie-in</div>
+              <div className="text-white font-semibold mt-1">Precision agriculture + geospatial planning</div>
+            </div>
+          </div>
+        </GlassPanel>
+      </div>
+      <div className="lg:col-span-5">
+        <GlassPanel className="p-6 h-full">
+          <h3 className="font-display font-bold text-lg text-white mb-4">Satellite List</h3>
+          <div className="space-y-2 max-h-[480px] overflow-auto pr-1">
+            {navicSats.map((sat) => (
+              <div key={sat} className="flex items-center justify-between bg-slate-900/60 border border-slate-700/50 rounded-lg px-3 py-2">
+                <span className="text-sm text-slate-200">{sat}</span>
+                <span className="text-xs text-emerald-400 font-semibold">healthy</span>
+              </div>
+            ))}
+          </div>
+        </GlassPanel>
+      </div>
     </motion.div>
   )
 }
@@ -258,8 +367,8 @@ function LaunchesTab() {
     }).catch(() => setLoading(false))
   }, [])
 
-  const pct         = prob?.probability_pct ?? 92
-  const riskLevel   = prob?.risk_level      ?? 'Favorable'
+  const pct         = prob?.probability_pct ?? 0
+  const riskLevel   = prob?.risk_level      ?? 'Unavailable'
   const riskColor   = riskLevel === 'Favorable' ? 'text-emerald-400' : riskLevel === 'Marginal' ? 'text-amber-400' : 'text-red-400'
   const launches    = schedule?.scheduled_launches ?? []
   const countdown   = schedule?.countdown ?? { days: 23, hours: 0, minutes: 0 }
@@ -415,21 +524,9 @@ function LaunchesTab() {
                       <td className="px-6 py-4 text-xs text-slate-500">{row.outcome ?? row.notes ?? '—'}</td>
                     </tr>
                   )) : (
-                    // Static fallback rows
-                    [
-                      {mission:'PSLV-C59', vehicle:'PSLV-XL', date:'2026-03-15', success:true},
-                      {mission:'GSLV Mk III', vehicle:'LVM3', date:'2026-04-02', success:true},
-                    ].map((row, i) => (
-                      <tr key={i} className="hover:bg-slate-800/30 transition-colors">
-                        <td className="px-6 py-4 font-medium text-white">{row.mission}</td>
-                        <td className="px-6 py-4 text-slate-400">{row.vehicle}</td>
-                        <td className="px-6 py-4 text-slate-400">{row.date}</td>
-                        <td className="px-6 py-4">
-                          <span className="inline-block px-2 py-0.5 rounded text-[10px] font-bold border uppercase bg-emerald-900/40 text-emerald-400 border-emerald-500/30">Success</span>
-                        </td>
-                        <td className="px-6 py-4 text-xs text-slate-500">—</td>
-                      </tr>
-                    ))
+                    <tr>
+                      <td className="px-6 py-6 text-slate-400" colSpan={5}>No live launch schedule data is available.</td>
+                    </tr>
                   )}
                 </tbody>
               </table>
@@ -446,7 +543,6 @@ function LaunchesTab() {
 export default function IsroMissionCenter() {
   const tabs = [
     { value: 'satellites',  label: '🛰️ Satellites' },
-    { value: 'chandrayaan', label: '🌙 Chandrayaan' },
     { value: 'launches',    label: '🚀 Launches' },
   ]
   const [activeTab, setActiveTab] = useState('satellites')
@@ -489,7 +585,6 @@ export default function IsroMissionCenter() {
 
         <AnimatePresence mode="wait">
           {activeTab === 'satellites'  && <SatellitesTab  key="satellites" />}
-          {activeTab === 'chandrayaan' && <ChandrayaanTab key="chandrayaan" />}
           {activeTab === 'launches'    && <LaunchesTab    key="launches" />}
         </AnimatePresence>
 

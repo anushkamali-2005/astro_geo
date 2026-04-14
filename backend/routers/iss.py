@@ -16,8 +16,8 @@ async def get_iss_position():
 
 @router.get("/passes")
 async def get_iss_passes(
-    lat: float,
-    lon: float,
+    lat: float = 19.0760,
+    lon: float = 72.8777,
     passes: int = 5
 ):
     """
