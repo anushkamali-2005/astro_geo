@@ -106,16 +106,6 @@ export default function EarthMonitoringDashboard() {
         {/* LEFT Globe Area */}
         <div className="lg:col-span-8 h-full relative group">
           <GlassPanel className="h-full w-full p-2 relative overflow-hidden flex flex-col justify-center items-center">
-            {/* Top Right Toggle */}
-            <div className="absolute top-6 right-6 z-10">
-              <Toggle checked={nightMode} onChange={(e) => setNightMode(e.target.checked)} label="Night Mode" />
-            </div>
-
-            {/* Simulated globe component taking space */}
-            <div className="absolute inset-0 z-0 flex items-center justify-center">
-               <GlobeHero />
-            </div>
-
             {/* Legend Bottom Left */}
             <div className="absolute bottom-6 left-6 z-10">
               <div className="space-y-3">

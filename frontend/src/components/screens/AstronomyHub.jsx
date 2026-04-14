@@ -58,23 +58,8 @@ function Toggle({ checked, onChange, label }) {
 // --------------------------------------------------------------------------------
 
 function SatellitesTab() {
-  const { homeCity, setHomeCity } = useAppShell()
-  const [nightMode, setNightMode] = useState(true)
-
   return (
     <>
-      <motion.div initial={{opacity:0, y:10}} animate={{opacity:1, y:0}} exit={{opacity:0, y:-10}} className="grid grid-cols-1 gap-6 items-start h-[calc(100vh-120px)] min-h-[700px]">
-        <div className="h-full relative group">
-          <GlassPanel className="h-full w-full p-2 relative flex flex-col justify-center items-center rounded-3xl">
-            <div className="absolute top-6 right-6 z-10">
-              <Toggle checked={nightMode} onChange={(e) => setNightMode(e.target.checked)} label="Night Mode" />
-            </div>
-            <div className="absolute inset-0 z-0 flex items-center justify-center">
-              <GlobeHero nightMode={nightMode} />
-            </div>
-          </GlassPanel>
-        </div>
-      </motion.div>
       <SatellitePassPredictor />
     </>
   )
@@ -345,7 +330,7 @@ function LaunchesTab() {
 
   useEffect(() => {
     setMounted(true)
-    const BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8095'
+    const BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
     fetch(`${BASE}/api/launch/probability`)
       .then(r => r.ok ? r.json() : null)
       .then(d => { if (d) setLaunchProb(d) })
@@ -386,54 +371,15 @@ function LaunchesTab() {
   const providerLabel = (name) => name || 'Unknown'
 
   const nextIsroLaunch = useMemo(() => {
-    const found = launches.find((launch) =>
+    return launches.find((launch) =>
       (launch.launch_service_provider?.name || '').toLowerCase().includes('isro')
-    )
-    if (found) return found
-    return {
-      id: 'fallback-isro',
-      name: 'PSLV-C59 / PROBA-3',
-      launch_service_provider: { name: 'ISRO' },
-      pad: { name: 'Satish Dhawan Space Centre' },
-      window_start: '2025-02-15T14:30:00Z',
-      status: { name: 'TBD' },
-      mission: { name: 'ESA Solar Mission' },
-    }
+    ) || null
   }, [launches])
 
-  const countdown = formatCountdown(nextIsroLaunch.window_start, mounted ? Date.now() : new Date('2025-02-01T00:00:00Z').getTime())
+  const countdown = formatCountdown(nextIsroLaunch?.window_start, mounted ? Date.now() : Date.now())
 
   const displayLaunches = useMemo(() => {
-    if (launches.length > 0) return launches.slice(0, 5)
-    return [
-      {
-        id: 'fallback-1',
-        name: 'Starlink Group 7-14',
-        launch_service_provider: { name: 'SpaceX' },
-        window_start: '2025-02-01T14:00:00Z',
-        pad: { name: 'Cape Canaveral SLC-40' },
-        status: { name: 'Go' },
-        mission: { name: 'Communications array' },
-      },
-      {
-        id: 'fallback-2',
-        name: 'NGLV Test Flight',
-        launch_service_provider: { name: 'ISRO' },
-        window_start: '2025-02-10T09:30:00Z',
-        pad: { name: 'Sriharikota' },
-        status: { name: 'Pending' },
-        mission: { name: 'Heavy-lift demonstrator' },
-      },
-      {
-        id: 'fallback-3',
-        name: 'Artemis III (Tentative)',
-        launch_service_provider: { name: 'NASA' },
-        window_start: '2025-03-05T18:00:00Z',
-        pad: { name: 'Kennedy LC-39B' },
-        status: { name: 'Tentative' },
-        mission: { name: 'Lunar crew rotation' },
-      },
-    ]
+    return launches.slice(0, 5)
   }, [launches])
 
   const agencyCheckboxes = agencyOptions.map((option) => {
@@ -469,9 +415,9 @@ function LaunchesTab() {
             🇮🇳 Next ISRO Launch
           </div>
 
-          <h2 className="text-3xl font-display font-bold text-white mb-2">{nextIsroLaunch.name}</h2>
-          <p className="text-slate-400 mb-2">{nextIsroLaunch.mission?.name || 'Mission details pending'}</p>
-          <p className="text-slate-500 text-sm">Launch pad: {nextIsroLaunch.pad?.name || 'TBD'}</p>
+          <h2 className="text-3xl font-display font-bold text-white mb-2">{nextIsroLaunch?.name || 'No ISRO launch in current live window'}</h2>
+          <p className="text-slate-400 mb-2">{nextIsroLaunch?.mission?.name || 'Adjust filters or date window to see a live ISRO mission.'}</p>
+          <p className="text-slate-500 text-sm">Launch pad: {nextIsroLaunch?.pad?.name || '—'}</p>
 
           <div className="grid grid-cols-4 gap-4 my-8">
             <div className="bg-[#0e121e]/80 p-4 rounded-2xl border border-slate-700/50 text-center">
@@ -506,7 +452,7 @@ function LaunchesTab() {
                     : 'text-rose-400'
                   : 'text-white'
               }`}>
-                {launchProb ? `${launchProb.probability_pct}%` : '78%'}
+                {launchProb ? `${launchProb.probability_pct}%` : '—'}
               </div>
             </div>
 
@@ -626,6 +572,8 @@ function LaunchesTab() {
               <div className="p-5 text-sm text-slate-400">Fetching launch schedule…</div>
             ) : launchError ? (
               <div className="p-5 text-sm text-amber-300">{launchError}</div>
+            ) : displayLaunches.length === 0 ? (
+              <div className="p-5 text-sm text-slate-400">No live launches match the selected filters.</div>
             ) : (
               displayLaunches.map((launch) => {
                 const date = new Date(launch.window_start)
@@ -723,9 +671,10 @@ export default function AstronomyHub() {
           {activeTab === 'launches' && <LaunchesTab key="launches" />}
           {activeTab === 'sun' && (
             <motion.div key="sun" initial={{opacity:0}} animate={{opacity:1}} exit={{opacity:0}} className="flex items-center justify-center h-[500px]">
-              <div className="text-center">
+              <div className="text-center max-w-xl px-6">
                 <div className="text-6xl mb-4">☀️</div>
-                <h3 className="text-xl font-display font-bold text-slate-300">Sun Monitoring (Coming Soon)</h3>
+                <h3 className="text-xl font-display font-bold text-slate-300">Solar data endpoint not integrated yet</h3>
+                <p className="text-slate-500 mt-2 text-sm">This tab is intentionally disabled until a real solar telemetry source is connected.</p>
               </div>
             </motion.div>
           )}

@@ -51,6 +51,10 @@ export const api = {
   getNDVI:      (zone, year = 2024) => get(`/api/earth/ndvi/${zone}?year=${year}`),
   getChange:    (zone) => get(`/api/earth/change/${zone}`),
   getLiveNDVI:  (zone, year) => get(`/api/earth/live/${zone}/${year}`),
+  getEONETEvents: (params = '') => get(`/api/eonet/events${params ? `?${params}` : ''}`),
+  getEONETGeoJSON: (params = '') => get(`/api/eonet/events/geojson${params ? `?${params}` : ''}`),
+  getEONETCategories: () => get('/api/eonet/categories'),
+  getEONETLayers: () => get('/api/eonet/layers'),
 
   // ── Agriculture ───────────────────────────────────────────
   getDrought:   (district) => get(`/api/agro/drought/${district}`),

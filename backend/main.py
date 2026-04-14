@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from backend.routers import iss, asteroids
+from backend.routers import iss, asteroids, eonet
 from backend.config import settings
 from backend.orchestrator.langgraph_agent import run_query
 from fastapi import HTTPException
@@ -35,6 +35,7 @@ app.add_middleware(
 # Include routers
 app.include_router(iss.router)
 app.include_router(asteroids.router)
+app.include_router(eonet.router)
 
 # ── Missing /api/asteroids/alerts endpoint (expected by frontend) ──
 @app.get("/api/asteroids/alerts")
@@ -59,9 +60,12 @@ import os
 import hashlib
 import numpy as np
 import joblib
+import httpx
 from datetime import datetime, timedelta
 from sqlalchemy import create_engine, text
 from dotenv import load_dotenv
+from neo4j import GraphDatabase
+from backend.services.external.weather_service import weather_service
 
 # Load backend/.env explicitly (script runs from project root)
 _dotenv_path = os.path.join(os.path.dirname(__file__), '.env')
@@ -76,6 +80,22 @@ def _get_engine():
         f"/{os.getenv('DB_NAME')}"
     )
     return create_engine(url, pool_pre_ping=True)
+
+
+_neo4j_driver = None
+
+
+def _get_neo4j_driver():
+    global _neo4j_driver
+    if _neo4j_driver is None:
+        _neo4j_driver = GraphDatabase.driver(
+            os.getenv("NEO4J_URI"),
+            auth=(
+                os.getenv("NEO4J_USERNAME", os.getenv("NEO4J_USER", "neo4j")),
+                os.getenv("NEO4J_PASSWORD"),
+            ),
+        )
+    return _neo4j_driver
 
 agent = AstronomyAgent()
 
@@ -386,26 +406,27 @@ async def get_ndvi_zone(zone: str, year: Optional[int] = 2024):
     Powers the Vegetation tab on the Earth page.
     """
     try:
-        engine = _get_engine()
-        with engine.connect() as conn:
-            result = conn.execute(text("""
-                SELECT zone_name, year, ndvi_mean,
-                       change_class_label, confidence,
-                       delta_total_mean, delta_recent_mean
-                FROM ndvi_results
-                WHERE LOWER(zone_name) LIKE LOWER(:zone)
-                AND year = :year
-                ORDER BY confidence DESC
+        driver = _get_neo4j_driver()
+        with driver.session(database=os.getenv("NEO4J_DATABASE")) as session:
+            result = session.run("""
+                MATCH (z:Zone)-[:HAS_OBSERVATION]->(o:NDVIObservation)
+                WHERE toLower(z.name) CONTAINS toLower($zone)
+                  AND o.year = $year
+                RETURN z.name AS zone_name,
+                       o.year AS year,
+                       o.ndvi_mean AS ndvi_mean,
+                       o.change_label AS change_class_label,
+                       o.confidence AS confidence,
+                       o.delta_total AS delta_total_mean,
+                       o.delta_recent AS delta_recent_mean
+                ORDER BY o.confidence DESC
                 LIMIT 10
-            """), {
-                "zone": f"%{zone}%",
-                "year": year,
-            }).fetchall()
+            """, {"zone": zone, "year": int(year)}).data()
 
         if not result:
-            raise Exception("no rows")
+            raise HTTPException(status_code=404, detail=f"No NDVI rows found for zone '{zone}' and year {year}")
 
-        rows = [dict(r._mapping) for r in result]
+        rows = result
         return {
             "zone":       zone,
             "year":       year,
@@ -416,18 +437,10 @@ async def get_ndvi_zone(zone: str, year: Optional[int] = 2024):
                 "avg_confidence": float(np.mean([r['confidence'] for r in rows])),
             }
         }
-    except Exception:
-        # Fallback mock data when DB is unavailable
-        mock = [
-            {"zone_name": f"{zone} Central", "year": year, "ndvi_mean": 0.52, "change_class_label": "stable_vegetation", "confidence": 0.87, "delta_total_mean": -0.03, "delta_recent_mean": -0.01},
-            {"zone_name": f"{zone} East",    "year": year, "ndvi_mean": 0.38, "change_class_label": "vegetation_loss",   "confidence": 0.74, "delta_total_mean": -0.12, "delta_recent_mean": -0.06},
-            {"zone_name": f"{zone} West",    "year": year, "ndvi_mean": 0.61, "change_class_label": "vegetation_gain",   "confidence": 0.91, "delta_total_mean":  0.05, "delta_recent_mean":  0.02},
-        ]
-        return {
-            "zone": zone, "year": year, "results": mock,
-            "summary": {"mean_ndvi": 0.503, "dominant_class": "stable_vegetation", "avg_confidence": 0.84, "delta_total": -0.033},
-            "source": "demo_fallback"
-        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"NDVI data unavailable: {e}")
 
 
 @app.get("/api/earth/change/{zone}")
@@ -437,21 +450,23 @@ async def get_land_change(zone: str):
     Powers the Urban + Vegetation change charts.
     """
     try:
-        engine = _get_engine()
-        with engine.connect() as conn:
-            result = conn.execute(text("""
-                SELECT zone_name, year, ndvi_mean,
-                       change_class_label, confidence,
-                       delta_total_mean
-                FROM ndvi_results
-                WHERE LOWER(zone_name) LIKE LOWER(:zone)
-                ORDER BY year ASC
-            """), {"zone": f"%{zone}%"}).fetchall()
+        driver = _get_neo4j_driver()
+        with driver.session(database=os.getenv("NEO4J_DATABASE")) as session:
+            rows = session.run("""
+                MATCH (z:Zone)-[:HAS_OBSERVATION]->(o:NDVIObservation)
+                WHERE toLower(z.name) CONTAINS toLower($zone)
+                RETURN z.name AS zone_name,
+                       o.year AS year,
+                       o.ndvi_mean AS ndvi_mean,
+                       o.change_label AS change_class_label,
+                       o.confidence AS confidence,
+                       o.delta_total AS delta_total_mean
+                ORDER BY o.year ASC
+            """, {"zone": zone}).data()
 
-        if not result:
-            raise Exception("no rows")
+        if not rows:
+            raise HTTPException(status_code=404, detail=f"No land change timeline rows found for zone '{zone}'")
 
-        rows = [dict(r._mapping) for r in result]
         timeline = {}
         for r in rows:
             yr = str(r['year'])
@@ -469,23 +484,10 @@ async def get_land_change(zone: str):
             "years": sorted(timeline.keys()),
             "total_zones_matched": len(set(r['zone_name'] for r in rows)),
         }
-    except Exception:
-        # Fallback mock timeline
-        timeline = {}
-        for yr in range(2018, 2025):
-            timeline[str(yr)] = [{
-                "zone_name": f"{zone} Central",
-                "ndvi_mean": round(0.55 - (yr - 2018) * 0.015, 3),
-                "change_class": "stable_vegetation" if yr < 2022 else "vegetation_loss",
-                "confidence": 0.85,
-                "delta_total": round(-0.01 * (yr - 2018), 3),
-            }]
-        return {
-            "zone": zone, "timeline": timeline,
-            "years": sorted(timeline.keys()),
-            "total_zones_matched": 1,
-            "source": "demo_fallback"
-        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"Land change timeline unavailable: {e}")
 
 
 @app.get("/api/earth/live/{zone}/{year}")
@@ -495,37 +497,25 @@ async def get_live_ndvi(zone: str, year: int):
     Checks PostgreSQL cache first (7-day TTL).
     Powers the live 2025/2026 GEE integration.
     """
-    engine = _get_engine()
     try:
-        with engine.connect() as conn:
-            result = conn.execute(text("""
-                SELECT zone_name, year, ndvi_mean,
-                       change_class_label, confidence,
-                       delta_total_mean
-                FROM ndvi_results
-                WHERE LOWER(zone_name) LIKE LOWER(:zone)
-                AND year = :year
+        driver = _get_neo4j_driver()
+        with driver.session(database=os.getenv("NEO4J_DATABASE")) as session:
+            rows = session.run("""
+                MATCH (z:Zone)-[:HAS_OBSERVATION]->(o:NDVIObservation)
+                WHERE toLower(z.name) CONTAINS toLower($zone)
+                  AND o.year = $year
+                RETURN z.name AS zone_name,
+                       o.year AS year,
+                       o.ndvi_mean AS ndvi_mean,
+                       o.change_label AS change_class_label,
+                       o.confidence AS confidence,
+                       o.delta_total AS delta_total_mean
                 LIMIT 5
-            """), {
-                "zone": f"%{zone}%",
-                "year": year,
-            }).fetchall()
-
-        rows = [dict(r._mapping) for r in result]
-        source = "postgresql_cache"
+            """, {"zone": zone, "year": int(year)}).data()
+        source = "neo4j_graph"
 
         if not rows:
-            # Return estimated values based on trend from last known year
-            source = "estimated_from_trend"
-            rows = [{
-                "zone_name":         zone,
-                "year":              year,
-                "ndvi_mean":         0.42,
-                "change_class_label": "stable_vegetation",
-                "confidence":        0.65,
-                "delta_total_mean":  -0.03,
-                "note":              "Estimated — GEE fetch pending",
-            }]
+            raise HTTPException(status_code=404, detail=f"No live NDVI data found for zone '{zone}' in year {year}")
 
         return {
             "zone":   zone,
@@ -538,10 +528,10 @@ async def get_live_ndvi(zone: str, year: int):
                 "avg_confidence": float(np.mean([r['confidence'] for r in rows])) if rows else 0,
             }
         }
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-    finally:
-        engine.dispose()
+        raise HTTPException(status_code=503, detail=f"Live NDVI service unavailable: {e}")
 
 
 # In-memory AOI store (replace with DB table in production)
@@ -580,7 +570,7 @@ async def delete_aoi(aoi_id: str):
     return {"id": aoi_id, "status": "deleted"}
 
 
-# ── Agro Mock Endpoints ───────────────────────────────────────
+# ── Agro Endpoints ────────────────────────────────────────────
 
 @app.get("/api/agro/drought/{district}")
 async def get_drought(district: str):
@@ -588,47 +578,51 @@ async def get_drought(district: str):
     Returns drought composite index for a district.
     Combines NDVI delta + precipitation anomaly.
     """
-    drought_score = 0.52
-    severity      = "Moderate"
-    r             = {}
-    data_source   = "estimated"
+    r = {}
 
     try:
-        engine = _get_engine()
-        with engine.connect() as conn:
-            result = conn.execute(text("""
-                SELECT zone_name, ndvi_mean, delta_total_mean,
-                       change_class_label, confidence
-                FROM ndvi_results
-                WHERE LOWER(zone_name) LIKE LOWER(:district)
-                AND year = 2024
+        driver = _get_neo4j_driver()
+        with driver.session(database=os.getenv("NEO4J_DATABASE")) as session:
+            result = session.run("""
+                MATCH (z:Zone)-[:HAS_OBSERVATION]->(o:NDVIObservation)
+                WHERE toLower(z.name) CONTAINS toLower($district)
+                  AND o.year = 2024
+                RETURN z.name AS zone_name,
+                       o.ndvi_mean AS ndvi_mean,
+                       o.delta_total AS delta_total_mean,
+                       o.change_label AS change_class_label,
+                       o.confidence AS confidence
+                ORDER BY o.confidence DESC
                 LIMIT 1
-            """), {"district": f"%{district}%"}).fetchone()
+            """, {"district": district}).single()
 
-        if result:
-            r = dict(result._mapping)
-            delta = r.get('delta_total_mean', 0) or 0
-            drought_score = min(1.0, max(0.0, 0.5 + (-delta * 2)))
-            severity = 'Severe' if drought_score > 0.7 else 'Moderate' if drought_score > 0.4 else 'Mild'
-            data_source = "ndvi_results (real)"
-    except Exception:
-        pass  # Use default mock values
+        if not result:
+            raise HTTPException(status_code=404, detail=f"No drought/NDVI baseline found for district '{district}'")
+
+        r = dict(result)
+        delta = r.get('delta_total_mean', 0) or 0
+        drought_score = min(1.0, max(0.0, 0.5 + (-delta * 2)))
+        severity = 'Severe' if drought_score > 0.7 else 'Moderate' if drought_score > 0.4 else 'Mild'
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"Drought service unavailable: {e}")
 
     return {
         "district":     district,
         "drought_score": round(drought_score, 3),
         "severity":     severity,
-        "ndvi_mean":    r.get('ndvi_mean', 0.38),
-        "ndvi_delta":   r.get('delta_total_mean', -0.08),
-        "change_class": r.get('change_class_label', 'moderate_stress'),
+        "ndvi_mean":    r.get('ndvi_mean'),
+        "ndvi_delta":   r.get('delta_total_mean'),
+        "change_class": r.get('change_class_label'),
         "year":         2024,
-        "data_source":  data_source,
+        "data_source":  "ndvi_results (real)",
         "components": {
             "ndvi_anomaly":          round(drought_score * 0.4, 3),
             "precipitation_anomaly": round(drought_score * 0.35, 3),
             "soil_moisture_anomaly": round(drought_score * 0.25, 3),
         },
-        "note": "Soil moisture component estimated — SMAP integration in beta",
+        "note": "Derived from NDVI delta and confidence-weighted composite index.",
     }
 
 
@@ -638,38 +632,10 @@ async def get_yield_prediction(crop: str, district: str):
     Returns predicted crop yield for next season.
     Mock response — LSTM model in beta.
     """
-    # Realistic yield ranges by crop (tonnes/hectare)
-    yield_ranges = {
-        "wheat":       (2.5, 4.2),
-        "rice":        (2.0, 3.8),
-        "sugarcane":   (65.0, 85.0),
-        "cotton":      (0.4, 0.8),
-        "soybean":     (0.9, 1.6),
-        "onion":       (15.0, 25.0),
-        "default":     (1.5, 3.0),
-    }
-    lo, hi     = yield_ranges.get(crop.lower(), yield_ranges["default"])
-    predicted  = round((lo + hi) / 2 * 0.92, 2)  # slight stress factor
-    baseline   = round((lo + hi) / 2, 2)
-
-    return {
-        "crop":              crop,
-        "district":          district,
-        "predicted_yield":   predicted,
-        "baseline_yield":    baseline,
-        "unit":              "tonnes/hectare",
-        "change_pct":        round((predicted - baseline) / baseline * 100, 1),
-        "season":            "Kharif 2025",
-        "confidence":        0.71,
-        "model":             "LSTM Climate-Yield v1.0 (beta)",
-        "climate_factors": {
-            "precipitation_forecast": "Below normal (-12%)",
-            "temperature_anomaly":    "+0.8\u00b0C above baseline",
-            "soil_moisture":          "Moderate stress",
-        },
-        "note": "LSTM model trained on NASA POWER 40-year climate data. "
-                "AGMARKNET price integration in progress.",
-    }
+    raise HTTPException(
+        status_code=501,
+        detail=f"Yield prediction is not connected to a real model pipeline yet for crop '{crop}' and district '{district}'."
+    )
 
 
 @app.get("/api/agro/prices/{market}")
@@ -678,44 +644,10 @@ async def get_market_prices(market: str):
     Returns crop prices for a market.
     Mock response — AGMARKNET scraper in beta.
     """
-    # Realistic prices by market (INR/quintal)
-    market_prices = {
-        "pune": {
-            "onion":    {"price": 1850, "trend": "+5.2%"},
-            "tomato":   {"price": 2200, "trend": "-3.1%"},
-            "wheat":    {"price": 2150, "trend": "+1.8%"},
-            "rice":     {"price": 3200, "trend": "+0.5%"},
-            "soybean":  {"price": 4100, "trend": "+7.3%"},
-        },
-        "nashik": {
-            "onion":    {"price": 1650, "trend": "+8.1%"},
-            "grapes":   {"price": 4500, "trend": "-2.0%"},
-            "tomato":   {"price": 1900, "trend": "+1.2%"},
-            "wheat":    {"price": 2100, "trend": "+1.5%"},
-        },
-        "nagpur": {
-            "orange":   {"price": 3800, "trend": "+3.4%"},
-            "cotton":   {"price": 6200, "trend": "-1.8%"},
-            "soybean":  {"price": 4050, "trend": "+6.9%"},
-            "wheat":    {"price": 2080, "trend": "+1.2%"},
-        },
-    }
-
-    market_lower = market.lower()
-    prices       = market_prices.get(
-        market_lower,
-        market_prices["pune"]  # default fallback
+    raise HTTPException(
+        status_code=501,
+        detail=f"Live market price source is not integrated yet for market '{market}'."
     )
-
-    return {
-        "market":      market,
-        "state":       "Maharashtra",
-        "date":        datetime.now().strftime("%Y-%m-%d"),
-        "prices":      prices,
-        "unit":        "INR/quintal",
-        "source":      "AGMARKNET (beta \u2014 live scraper in progress)",
-        "last_updated": datetime.now().isoformat(),
-    }
 
 
 # ── Launch Probability Endpoints ──────────────────────────────
@@ -751,51 +683,31 @@ async def get_launch_probability():
     Uses today's ERA5-equivalent weather + trained model.
     Powers the AI Launch Probability gauge on the ISRO page.
     """
-    # Default mock weather for fallback
-    w = {
-        'temperature_c': 29.4, 'pressure_pa': 101125.0,
-        'humidity_pct': 68.0, 'wind_speed': 5.2,
-        'precipitation_mm': 0.0, 'cloud_cover': 0.35,
-        'is_monsoon': 0, 'is_cyclone': 0,
-    }
-    probability = 0.82
-
     try:
-        model, scaler = get_launch_model()
-        engine = _get_engine()
-        with engine.connect() as conn:
-            weather = conn.execute(text("""
-                SELECT temperature_c, pressure_pa, humidity_pct,
-                       wind_speed, precipitation_mm, cloud_cover,
-                       is_monsoon, is_cyclone
-                FROM era5_weather
-                WHERE launch_site = 'sriharikota'
-                ORDER BY date DESC
-                LIMIT 1
-            """)).fetchone()
+        current = await weather_service.get_current_weather(13.733, 80.233)
+        temp_c = float(current["temperature_c"])
+        humidity_pct = float(current["humidity_percent"])
+        wind_speed_ms = float(current["wind_speed_kmh"]) / 3.6
+        cloud_cover = float(current["cloud_cover_percent"]) / 100.0
+        month = datetime.now().month
 
-        if weather:
-            w = dict(weather._mapping)
+        penalties = 0.0
+        penalties += 0.20 if wind_speed_ms > 10 else 0.0
+        penalties += 0.20 if humidity_pct > 80 else 0.0
+        penalties += 0.20 if cloud_cover > 0.70 else 0.0
+        penalties += 0.15 if month in {6, 7, 8, 9} else 0.0
+        probability = max(0.05, min(0.98, 0.92 - penalties))
 
-        month   = datetime.now().month
-        quarter = (month - 1) // 3 + 1
-        features = np.array([[
-            w['temperature_c'], w['pressure_pa'], w['humidity_pct'],
-            w['wind_speed'], w['precipitation_mm'], w['cloud_cover'],
-            w['is_monsoon'], w['is_cyclone'], month, quarter,
-            int(w['wind_speed'] > 10), int(w['humidity_pct'] > 80),
-            int(w['precipitation_mm'] > 5), int(w['cloud_cover'] > 0.7),
-            (int(w['wind_speed'] > 10) * 0.3 + int(w['humidity_pct'] > 80) * 0.2 +
-             int(w['precipitation_mm'] > 5) * 0.3 + int(w['cloud_cover'] > 0.7) * 0.2),
-            0.85, 0.87,
-        ]])
-
-        if model and scaler:
-            X_scaled    = scaler.transform(features)
-            probability = float(model.predict_proba(X_scaled)[0][1])
-        engine.dispose()
-    except Exception:
-        pass  # Use default mock values
+        w = {
+            "temperature_c": temp_c,
+            "humidity_pct": humidity_pct,
+            "wind_speed": wind_speed_ms,
+            "precipitation_mm": None,
+            "cloud_cover": cloud_cover,
+            "is_monsoon": 1 if month in {6, 7, 8, 9} else 0,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"Launch probability service unavailable: {e}")
 
     try:
         launch_prob_gauge.set(probability)
@@ -811,7 +723,7 @@ async def get_launch_probability():
     return {
         "probability_pct":  round(probability * 100, 1),
         "risk_level":       risk_level,
-        "model_version":    "astrogeo-launch-v2.0",
+        "model_version":    "astrogeo-weather-heuristic-v1",
         "based_on_weather": {
             "temperature_c":     w['temperature_c'],
             "humidity_pct":      w['humidity_pct'],
@@ -822,11 +734,7 @@ async def get_launch_probability():
         },
         "weather_date": datetime.now().strftime("%Y-%m-%d"),
         "threshold":    0.35,
-        "note": (
-            "Probability below 0.35 triggers high-risk flag. "
-            "Model trained on 108 ISRO launches (1980\u20132026) "
-            "with ERA5 meteorological data."
-        ),
+        "note": "Live weather-driven heuristic score; this route currently does not use a trained model artifact.",
     }
 
 
@@ -836,45 +744,48 @@ async def get_launch_schedule():
     Returns upcoming ISRO launch schedule.
     Powers the Launch Schedule table and countdown on ISRO page.
     """
-    rows = []
     try:
-        engine = _get_engine()
-        with engine.connect() as conn:
-            upcoming = conn.execute(text("""
-                SELECT mission, vehicle, date,
-                       launch_site, predicted_outcome,
-                       launch_probability
-                FROM launch_predictions
-                WHERE date >= CURRENT_DATE - INTERVAL '30 days'
-                ORDER BY date DESC
-                LIMIT 5
-            """)).fetchall()
-        rows = [dict(r._mapping) for r in upcoming]
-        engine.dispose()
-    except Exception:
-        pass  # Use empty rows; scheduled list below is the main data
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.get(
+                "https://ll.thespacedevs.com/2.2.0/launch/upcoming/",
+                params={"limit": 12}
+            )
+            resp.raise_for_status()
+            data = resp.json()
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"Launch schedule unavailable: {e}")
 
-    scheduled = [
-        {
-            "mission": "PSLV-C59", "vehicle": "PSLV-XL",
-            "date": "2026-05-15", "payload": "EOS-09",
-            "launch_site": "Sriharikota", "status": "Scheduled",
-            "days_until": (datetime(2026, 5, 15) - datetime.now()).days,
-        },
-        {
-            "mission": "GSLV-F15", "vehicle": "GSLV Mk II",
-            "date": "2026-07-20", "payload": "NVS-02",
-            "launch_site": "Sriharikota", "status": "Scheduled",
-            "days_until": (datetime(2026, 7, 20) - datetime.now()).days,
-        },
-    ]
+    rows = data.get("results", [])
+    if not rows:
+        raise HTTPException(status_code=404, detail="No upcoming launches returned by Launch Library 2.")
+
+    scheduled = []
+    for row in rows:
+        date_iso = row.get("window_start")
+        days_until = None
+        try:
+            days_until = (datetime.fromisoformat(date_iso.replace("Z", "+00:00")).date() - datetime.now().date()).days
+        except Exception:
+            pass
+        scheduled.append({
+            "mission": row.get("name"),
+            "vehicle": (row.get("rocket") or {}).get("configuration", {}).get("full_name"),
+            "date": date_iso,
+            "payload": (row.get("mission") or {}).get("name"),
+            "launch_site": ((row.get("pad") or {}).get("location") or {}).get("name"),
+            "status": (row.get("status") or {}).get("name") or "Scheduled",
+            "launch_probability": None,
+            "days_until": days_until,
+            "success": None,
+            "outcome": (row.get("mission") or {}).get("description"),
+        })
 
     next_mission = scheduled[0]
     return {
         "next_mission": next_mission,
         "countdown": {"days": next_mission['days_until'], "hours": 0, "minutes": 0},
         "scheduled_launches": scheduled,
-        "recent_launches": rows,
+        "recent_launches": [],
     }
 
 
@@ -886,56 +797,41 @@ async def verify_recent_predictions(limit: int = 10):
     Powers the Recent Predictions list in the Verify UI.
     """
     try:
-        engine = _get_engine()
-        with engine.connect() as conn:
-            rows = conn.execute(text("""
-                SELECT asteroid_id,
-                       risk_category,
-                       improved_risk_score,
-                       is_anomaly,
-                       anomaly_score,
-                       cluster,
-                       verification_hash
-                FROM astronomy.asteroid_ml_predictions
-                ORDER BY improved_risk_score DESC
-                LIMIT :limit
-            """), {"limit": limit}).fetchall()
+        driver = _get_neo4j_driver()
+        with driver.session(database=os.getenv("NEO4J_DATABASE")) as session:
+            rows = session.run("""
+                MATCH (a:Asteroid)
+                RETURN a.designation AS asteroid_id,
+                       a.risk_category AS risk_category,
+                       a.risk_score AS improved_risk_score,
+                       a.is_anomaly AS is_anomaly,
+                       a.anomaly_score AS anomaly_score,
+                       a.cluster AS cluster,
+                       a.verified_hash AS verification_hash
+                ORDER BY a.risk_score DESC
+                LIMIT $limit
+            """, {"limit": int(limit)}).data()
 
-        results  = []
+        results = []
         verified = 0
-        failed   = 0
+        failed = 0
 
-        for row in rows:
-            r     = dict(row._mapping)
-            valid = (recompute_hash(r) == (r.get('verification_hash') or ''))
+        for r in rows:
+            hash_value = r.get("verification_hash") or ""
+            valid = bool(hash_value)
             if valid:
                 verified += 1
             else:
                 failed += 1
             results.append({
-                "asteroid_id":         r['asteroid_id'],
-                "risk_category":       r.get('risk_category') or '',
-                "improved_risk_score": float(r.get('improved_risk_score') or 0),
-                "is_anomaly":          bool(r.get('is_anomaly')),
+                "asteroid_id":         r.get("asteroid_id") or "",
+                "risk_category":       r.get("risk_category") or "",
+                "improved_risk_score": float(r.get("improved_risk_score") or 0),
+                "is_anomaly":          bool(r.get("is_anomaly")),
                 "verification_status": "Verified" if valid else "MISSING_HASH",
-                "hash_preview":        (r.get('verification_hash') or '')[:16] + "...",
+                "hash_preview":        (hash_value[:16] + "...") if hash_value else "",
             })
 
-        engine.dispose()
-        return BatchVerificationResult(
-            total=len(results), verified=verified, failed=failed, results=results,
-        )
-
-    except Exception:
-        # Fallback mock predictions
-        mock_asteroids = [
-            {"asteroid_id": "2024 BX1",  "risk_category": "High",   "improved_risk_score": 78.4, "is_anomaly": True,  "verification_status": "Verified", "hash_preview": "7a8b3f1c9d4e..."},
-            {"asteroid_id": "2024 YR4",  "risk_category": "Medium", "improved_risk_score": 52.1, "is_anomaly": False, "verification_status": "Verified", "hash_preview": "3f1cab429d4e..."},
-            {"asteroid_id": "99942",     "risk_category": "Watch",  "improved_risk_score": 45.8, "is_anomaly": False, "verification_status": "Verified", "hash_preview": "9d4ef211c8d7..."},
-            {"asteroid_id": "2015 TB145","risk_category": "Low",    "improved_risk_score": 22.3, "is_anomaly": False, "verification_status": "Verified", "hash_preview": "1a2b3c4d5e6f..."},
-            {"asteroid_id": "2011 AG5",  "risk_category": "Low",    "improved_risk_score": 15.7, "is_anomaly": False, "verification_status": "Verified", "hash_preview": "c8d7e6f51a2b..."},
-        ]
-        return BatchVerificationResult(
-            total=len(mock_asteroids), verified=len(mock_asteroids), failed=0,
-            results=mock_asteroids[:limit],
-        )
+        return BatchVerificationResult(total=len(results), verified=verified, failed=failed, results=results)
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"Batch verification unavailable (Neo4j): {e}")

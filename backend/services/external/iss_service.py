@@ -55,50 +55,53 @@ class ISSService:
           - passes: list of pass dicts
           - data_source: "live" | "cached" | "unavailable"
         """
-        # ── Step 1: Try live N2YO fetch ────────────────────────────────────
-        # fetch_n2yo_passes_live uses requests (sync) — run it in a thread pool
-        # so it doesn't block the FastAPI async event loop.
-        DAYS = 10
-        MIN_EL = 10
-        loop = asyncio.get_event_loop()
-        live_result = await loop.run_in_executor(
-            None,  # default ThreadPoolExecutor
-            lambda: fetch_n2yo_passes_live(
-                norad_id=ISS_NORAD,
-                lat=lat,
-                lon=lon,
-                days=DAYS,
-                min_elevation=MIN_EL
-            )
-        )
-
-        if live_result is not None:
-            # N2YO call succeeded (may be 0 passes — that's still "live")
-            note = None
-            if len(live_result) == 0:
-                note = (
-                    f"No visible ISS passes over your location in the next {DAYS} days "
-                    f"(minimum elevation: {MIN_EL}°). "
-                    "ISS visual passes require the station to be sunlit while your "
-                    "location is in darkness — these windows are currently absent."
-                )
-            return {
-                "passes":      live_result[:passes],
-                "data_source": "live",
-                "note":        note,
-            }
-
-        # ── Step 2: Fallback — nearest location in PostgreSQL cache ────────
-        print("[ISSService] ⚠️  N2YO call failed — falling back to DB cache")
         try:
-            cached = self._get_cached_passes(lat, lon, limit=passes)
-            if cached:
+            # ── Step 1: Try live N2YO fetch ────────────────────────────────
+            # fetch_n2yo_passes_live uses requests (sync) — run it in a thread pool
+            # so it doesn't block the FastAPI async event loop.
+            DAYS = 10
+            MIN_EL = 10
+            loop = asyncio.get_event_loop()
+            live_result = await loop.run_in_executor(
+                None,  # default ThreadPoolExecutor
+                lambda: fetch_n2yo_passes_live(
+                    norad_id=ISS_NORAD,
+                    lat=lat,
+                    lon=lon,
+                    days=DAYS,
+                    min_elevation=MIN_EL
+                )
+            )
+
+            if live_result is not None:
+                # N2YO call succeeded (may be 0 passes — that's still "live")
+                note = None
+                if len(live_result) == 0:
+                    note = (
+                        f"No visible ISS passes over your location in the next {DAYS} days "
+                        f"(minimum elevation: {MIN_EL}°). "
+                        "ISS visual passes require the station to be sunlit while your "
+                        "location is in darkness — these windows are currently absent."
+                    )
                 return {
-                    "passes":      cached,
-                    "data_source": "cached"
+                    "passes":      live_result[:passes],
+                    "data_source": "live",
+                    "note":        note,
                 }
+
+            # ── Step 2: Fallback — nearest location in PostgreSQL cache ────────
+            print("[ISSService] N2YO call failed - falling back to DB cache")
+            try:
+                cached = self._get_cached_passes(lat, lon, limit=passes)
+                if cached:
+                    return {
+                        "passes":      cached,
+                        "data_source": "cached"
+                    }
+            except Exception as e:
+                print(f"[ISSService] DB fallback also failed: {e}")
         except Exception as e:
-            print(f"[ISSService] ❌ DB fallback also failed: {e}")
+            print(f"[ISSService] Unexpected pass lookup failure: {e}")
 
         return {
             "passes":      [],

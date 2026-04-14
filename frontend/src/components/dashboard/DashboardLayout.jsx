@@ -177,17 +177,9 @@ export default function DashboardLayout({ children }) {
         </header>
 
         <main className="mx-auto max-w-[1400px] px-4 py-8 lg:px-8">
-          <AnimatePresence mode="wait">
-            <motion.div
-              key={pathname}
-              initial={{ opacity: 0, y: 8 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -8 }}
-              transition={{ duration: 0.22 }}
-            >
-              {children}
-            </motion.div>
-          </AnimatePresence>
+          <div key={pathname}>
+            {children}
+          </div>
         </main>
       </div>
     </div>

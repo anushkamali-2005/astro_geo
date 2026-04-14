@@ -355,40 +355,120 @@ function DroughtTab({ geoData }) {
               </div>
             </>
           ) : (
-            // Static fallback
-            <>
-              <div className="flex justify-between items-start mb-6">
-                <div>
-                  <div className="text-xs font-bold text-slate-400 tracking-widest uppercase mb-1">District Analysis</div>
-                  <h2 className="font-display font-bold text-xl text-white">Vidarbha Region, MH</h2>
-                </div>
-                <div className="text-right">
-                  <div className="inline-block px-3 py-1 bg-red-500/20 border border-red-500 border-dashed rounded text-red-500 font-bold text-sm mb-1">D2 (Severe Drought) 🔴</div>
-                  <div className="text-xs text-slate-500">Updated: 2 hours ago</div>
-                </div>
+            <div className="flex items-center justify-center h-full">
+              <div className="text-center p-6 border border-slate-700/50 rounded-xl bg-slate-900/60 w-full">
+                 <div className="text-4xl mb-4">📡</div>
+                 <h3 className="text-lg font-bold text-slate-300 mb-2">Drought feed unavailable</h3>
+                 <p className="text-sm text-slate-400 mb-4">No live drought record was returned from the backend for this district.</p>
+                 <p className="text-xs text-slate-500">This view no longer shows fabricated fallback values.</p>
               </div>
-              <div className="bg-slate-900/60 rounded-xl border border-slate-700/50 p-5 mb-5 space-y-4">
-                <div className="flex items-center gap-2 mb-2 text-indigo-400 font-bold text-sm">🤖 AI PREDICTION (Soil & Yield)</div>
-                <div className="grid grid-cols-2 gap-4">
-                  <div><div className="text-xs text-slate-400 mb-1">Soil Moisture</div><div className="text-xl font-bold text-red-400">12.3% <span className="text-xs font-normal text-slate-500">(8th pct)</span></div></div>
-                  <div><div className="text-xs text-slate-400 mb-1">Historical Avg</div><div className="text-xl font-bold text-slate-200">28.5%</div></div>
-                </div>
-                <div className="text-xs font-medium text-amber-500 bg-amber-500/10 p-2 rounded">⚠️ This is WORSE than 92% of historical records.</div>
-              </div>
-              <div className="bg-slate-900/60 rounded-xl border border-slate-700/50 p-5">
-                <h4 className="text-sm font-bold text-white mb-4 border-b border-slate-700 pb-2">🌾 CROP YIELD IMPACT PREDICTION</h4>
-                <div className="space-y-3">
-                  <div className="flex justify-between items-end"><span className="text-sm text-slate-300">Cotton Yield Predicted</span><span className="text-lg font-bold text-white">1.8 tons/ha</span></div>
-                  <div className="flex justify-between items-end"><span className="text-sm text-slate-400">Historical Average</span><span className="text-sm font-medium text-slate-300">2.4 tons/ha</span></div>
-                  <div className="flex justify-between items-end"><span className="text-sm text-slate-400">Expected Loss</span><span className="text-sm font-bold text-red-500">-25% loss</span></div>
-                </div>
-                <div className="mt-6 flex gap-2">
-                  <button className="flex-1 bg-indigo-500/20 hover:bg-indigo-500/30 text-indigo-400 text-xs font-bold py-2 rounded-lg transition-colors border border-indigo-500/50">✅ Verify Prediction</button>
-                  <button className="flex-1 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-bold py-2 rounded-lg transition-colors border border-slate-600">📥 Download Report</button>
-                </div>
-              </div>
-            </>
+            </div>
           )}
+        </GlassPanel>
+      </div>
+    </motion.div>
+  )
+}
+
+function EONETLiveTab({ categoryHint, title }) {
+  const [eventsData, setEventsData] = useState(null)
+  const [categoriesData, setCategoriesData] = useState(null)
+  const [layersData, setLayersData] = useState(null)
+  const [loading, setLoading] = useState(false)
+
+  useEffect(() => {
+    const load = async () => {
+      setLoading(true)
+      const query = new URLSearchParams({ limit: '20', status: 'all', days: '120' })
+      if (categoryHint) query.set('category', categoryHint)
+
+      const [eventsRes, categoriesRes, layersRes] = await Promise.all([
+        api.getEONETEvents(query.toString()),
+        api.getEONETCategories(),
+        api.getEONETLayers(),
+      ])
+
+      let effectiveEvents = eventsRes
+      // Some categories can legitimately have no recent events; in that case
+      // show latest global events instead of an empty screen.
+      if ((eventsRes?.events?.length ?? 0) === 0) {
+        const fallbackQuery = new URLSearchParams({ limit: '20', status: 'all', days: '60' })
+        effectiveEvents = await api.getEONETEvents(fallbackQuery.toString())
+      }
+
+      setEventsData(effectiveEvents)
+      setCategoriesData(categoriesRes)
+      setLayersData(layersRes)
+      setLoading(false)
+    }
+
+    load().catch(() => setLoading(false))
+  }, [categoryHint])
+
+  const events = eventsData?.events ?? []
+  const categories = categoriesData?.categories ?? []
+  const layersByCategory = layersData?.categories ?? []
+  const selectedCategory = categories.find(c => c.id === categoryHint)
+  const selectedLayers = (layersByCategory.find(c => c.id === categoryHint)?.layers ?? []).slice(0, 8)
+
+  return (
+    <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -10 }} className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+      <div className="lg:col-span-8">
+        <GlassPanel className="p-6">
+          <h2 className="font-display font-semibold text-lg text-white mb-1">{title} (Live NASA EONET)</h2>
+          <p className="text-xs text-slate-400 mb-5">
+            Source: <a className="text-cyan-400 hover:text-cyan-300" href="https://eonet.gsfc.nasa.gov/api/v3/events" target="_blank" rel="noreferrer">EONET Events API</a>
+          </p>
+
+          {loading ? (
+            <div className="h-80 flex items-center justify-center">
+              <div className="w-10 h-10 border-4 border-cyan-500/30 border-t-cyan-500 rounded-full animate-spin" />
+            </div>
+          ) : events.length === 0 ? (
+            <div className="h-80 flex items-center justify-center text-slate-400 text-sm border border-slate-700 rounded-xl">
+              No live events currently available for this category.
+            </div>
+          ) : (
+            <div className="space-y-3 max-h-[560px] overflow-auto pr-1">
+              {events.map((event) => {
+                const latestGeom = event.geometry?.[event.geometry.length - 1]
+                const when = latestGeom?.date ? new Date(latestGeom.date).toLocaleString() : 'Unknown time'
+                const firstCategory = event.categories?.[0]?.title ?? 'Uncategorized'
+                return (
+                  <div key={event.id} className="border border-slate-700 rounded-xl p-4 bg-slate-900/40">
+                    <div className="flex items-start justify-between gap-4">
+                      <div>
+                        <div className="font-semibold text-white">{event.title}</div>
+                        <div className="text-xs text-slate-400 mt-1">{firstCategory} • {when}</div>
+                      </div>
+                      <a href={event.link} target="_blank" rel="noreferrer" className="text-xs text-cyan-400 hover:text-cyan-300">
+                        Open event
+                      </a>
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+          )}
+        </GlassPanel>
+      </div>
+
+      <div className="lg:col-span-4">
+        <GlassPanel className="p-6 h-full">
+          <h3 className="font-display font-semibold text-white mb-4">Category + Layers</h3>
+          <div className="text-xs text-slate-400 mb-3">
+            {selectedCategory?.description ?? 'No category description available.'}
+          </div>
+          <div className="space-y-2 max-h-[500px] overflow-auto pr-1">
+            {selectedLayers.length > 0 ? selectedLayers.map((layer) => (
+              <div key={`${layer.name}-${layer.serviceUrl}`} className="p-3 rounded-lg border border-slate-700 bg-slate-900/50">
+                <div className="text-sm text-slate-200">{layer.name}</div>
+                <div className="text-[11px] text-slate-400 mt-1">{layer.serviceTypeId}</div>
+              </div>
+            )) : (
+              <div className="text-sm text-slate-500">No layers listed for this category.</div>
+            )}
+          </div>
         </GlassPanel>
       </div>
     </motion.div>
@@ -449,15 +529,8 @@ export default function EarthObservatory() {
         <AnimatePresence mode="wait">
           {activeTab === 'vegetation' && <VegetationTab key="vegetation" geoData={geoData} />}
           {activeTab === 'drought'    && <DroughtTab    key="drought"    geoData={geoData} />}
-          {(activeTab === 'urban' || activeTab === 'floods') && (
-             <motion.div key="coming-soon" initial={{opacity:0}} animate={{opacity:1}} exit={{opacity:0}} className="flex items-center justify-center h-[500px]">
-               <div className="text-center">
-                 <div className="text-5xl mb-4">{activeTab === 'urban' ? '🏙️' : '🌊'}</div>
-                 <h3 className="text-xl font-display font-bold text-slate-300 capitalize">{activeTab} Monitoring (Coming Soon)</h3>
-                 <p className="text-slate-500 mt-2 text-sm">Geospatial feature extraction pipeline currently training.</p>
-               </div>
-             </motion.div>
-          )}
+          {activeTab === 'urban' && <EONETLiveTab key="urban-live" title="Urban/Manmade Events" categoryHint="manmade" />}
+          {activeTab === 'floods' && <EONETLiveTab key="floods-live" title="Flood Monitoring" categoryHint="floods" />}
         </AnimatePresence>
 
       </div>
