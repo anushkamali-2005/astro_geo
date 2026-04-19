@@ -4,7 +4,10 @@ geojson>=3.0.0
 prometheus-fastapi-instrumentator>=6.0.0
 prometheus-client>=0.16.0
 fastapi
-uvicorn
+uvicorn[standard]
+gunicorn
+slowapi
+httpx
 langgraph
 langchain-openai
 langchain-core

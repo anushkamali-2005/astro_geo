@@ -1,5 +1,6 @@
-from sqlalchemy import create_engine
 import os
+
+from sqlalchemy import create_engine
 from .modules.satellite_tracker import SatelliteTracker
 from .modules.weather_analyzer import WeatherAnalyzer
 from .modules.asteroid_monitor import AsteroidMonitor
@@ -16,9 +17,15 @@ class AstronomyAgent:
         """
         Initialize database connection and sub-modules
         """
-        # Ensure we have a valid database URL
         db_url = settings.DATABASE_URL
-        self.engine = create_engine(db_url)
+        self.engine = create_engine(
+            db_url,
+            pool_pre_ping=True,
+            pool_size=int(os.getenv("DB_POOL_SIZE", "5")),
+            max_overflow=int(os.getenv("DB_MAX_OVERFLOW", "15")),
+            pool_recycle=int(os.getenv("DB_POOL_RECYCLE", "3600")),
+            pool_timeout=float(os.getenv("DB_POOL_TIMEOUT", "30")),
+        )
         
         self.satellite_tracker = SatelliteTracker(self.engine)
         self.weather_analyzer = WeatherAnalyzer(self.engine)

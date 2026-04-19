@@ -1,33 +1,93 @@
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
-from backend.routers import iss, asteroids, isro, donki
-from backend.config import settings
-from backend.orchestrator.langgraph_agent import run_query
-from fastapi import HTTPException
+from __future__ import annotations
+
+import asyncio
+import concurrent.futures
+import os
 import time
+from contextlib import asynccontextmanager
+from datetime import datetime, timedelta
+
+import httpx
+import prometheus_client
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.middleware.cors import CORSMiddleware
+from prometheus_fastapi_instrumentator import Instrumentator
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.middleware import SlowAPIMiddleware
+from slowapi.util import get_remote_address
+
+from backend.config import settings
+from backend.routers import asteroids, donki, eonet, iss, isro
+from backend.db.pools import (
+    close_neo4j_driver,
+    dispose_sqlalchemy_engine,
+    get_neo4j_driver,
+    get_sqlalchemy_engine,
+)
+from backend.orchestrator.langgraph_agent import close_langgraph_pg_pool, run_query
+from backend.services.external.weather_service import weather_service
+
+_launch_http_client: httpx.AsyncClient | None = None
+
+
+def _ensure_launch_http_client() -> httpx.AsyncClient:
+    """Shared httpx client for outbound APIs (connection pooling)."""
+    global _launch_http_client
+    if _launch_http_client is None:
+        limits = httpx.Limits(
+            max_keepalive_connections=int(os.getenv("HTTPX_MAX_KEEPALIVE", "32")),
+            max_connections=int(os.getenv("HTTPX_MAX_CONNECTIONS", "200")),
+        )
+        _launch_http_client = httpx.AsyncClient(timeout=15.0, limits=limits)
+    return _launch_http_client
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Tune thread pool for sync route handlers; release shared clients on shutdown."""
+    workers = int(os.getenv("THREAD_POOL_MAX_WORKERS", "128"))
+    executor = concurrent.futures.ThreadPoolExecutor(max_workers=workers)
+    loop = asyncio.get_running_loop()
+    loop.set_default_executor(executor)
+    _ensure_launch_http_client()
+    yield
+    global _launch_http_client
+    if _launch_http_client is not None:
+        await _launch_http_client.aclose()
+        _launch_http_client = None
+    await weather_service.close()
+    close_langgraph_pg_pool()
+    close_neo4j_driver()
+    dispose_sqlalchemy_engine()
+    executor.shutdown(wait=True)
+
 
 app = FastAPI(
     title=settings.API_TITLE,
-    version=settings.API_VERSION
+    version=settings.API_VERSION,
+    lifespan=lifespan,
 )
 
-from prometheus_fastapi_instrumentator import Instrumentator
-import prometheus_client
+limiter = Limiter(key_func=get_remote_address, default_limits=[os.getenv("API_DEFAULT_RATE_LIMIT", "200/minute")])
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+app.add_middleware(SlowAPIMiddleware)
 
-# Instrument FastAPI with Prometheus metrics
 Instrumentator().instrument(app).expose(app)
 
 # Custom metric: Launch Probability Gauge
 launch_prob_gauge = prometheus_client.Gauge('launch_probability', 'Predicted launch probability score')
 
-# ── CORS — allow Next.js frontend ─────────────────────────────
+# ── CORS — allow Next.js frontend (comma-separated origins in CORS_ORIGINS for production) ──
+_cors_raw = os.getenv(
+    "CORS_ORIGINS",
+    "http://localhost:3000,http://localhost:3001,http://127.0.0.1:3000",
+)
+_cors_origins = [o.strip() for o in _cors_raw.split(",") if o.strip()]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3000",
-        "http://localhost:3001",
-        "http://127.0.0.1:3000",
-    ],
+    allow_origins=_cors_origins or ["http://localhost:3000"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -52,57 +112,26 @@ async def asteroids_alerts():
         "source": "NASA CNEOS (cached)"
     }
 
-from pydantic import BaseModel
 from typing import Optional
-from backend.agents.astronomy.astronomy_agent import AstronomyAgent
-from langchain_openai import ChatOpenAI
-from langchain_core.messages import HumanMessage
-import os
+
 import hashlib
-import numpy as np
 import joblib
-import httpx
-from datetime import datetime, timedelta
-from sqlalchemy import create_engine, text
+import numpy as np
 from dotenv import load_dotenv
-from neo4j import GraphDatabase
-from backend.services.external.weather_service import weather_service
+from langchain_core.messages import HumanMessage
+from langchain_openai import ChatOpenAI
+from pydantic import BaseModel
+from sqlalchemy import text
+
+from backend.agents.astronomy.astronomy_agent import AstronomyAgent
 
 # Load backend/.env explicitly (script runs from project root)
 _dotenv_path = os.path.join(os.path.dirname(__file__), '.env')
 load_dotenv(_dotenv_path)
 
-
-def _get_engine():
-    """Build a SQLAlchemy engine from individual DB_* env vars."""
-    url = (
-        f"postgresql://{os.getenv('DB_USER')}:{os.getenv('DB_PASSWORD', '')}"
-        f"@{os.getenv('DB_HOST', 'localhost')}:{os.getenv('DB_PORT', '5432')}"
-        f"/{os.getenv('DB_NAME')}"
-    )
-    return create_engine(
-        url,
-        pool_pre_ping=True,
-        connect_args={"connect_timeout": 3},
-        pool_timeout=3,
-    )
-
-
-
-_neo4j_driver = None
-
-
-def _get_neo4j_driver():
-    global _neo4j_driver
-    if _neo4j_driver is None:
-        _neo4j_driver = GraphDatabase.driver(
-            os.getenv("NEO4J_URI"),
-            auth=(
-                os.getenv("NEO4J_USERNAME", os.getenv("NEO4J_USER", "neo4j")),
-                os.getenv("NEO4J_PASSWORD"),
-            ),
-        )
-    return _neo4j_driver
+# Bound concurrent heavy work (LLM + LangGraph); tune per CPU/RAM
+_GRAPH_QUERY_SEM = asyncio.Semaphore(int(os.getenv("MAX_CONCURRENT_GRAPH_QUERIES", "40")))
+_QUERY_SEM = asyncio.Semaphore(int(os.getenv("MAX_CONCURRENT_QUERY_ENDPOINT", "60")))
 
 agent = AstronomyAgent()
 
@@ -110,21 +139,12 @@ class QueryRequest(BaseModel):
     query: str
     location: str = "Mumbai, India"
 
-@app.get("/")
-async def root():
-    return {"message": "AstroGeo API", "version": settings.API_VERSION}
 
-@app.get("/health")
-async def health_check():
-    return {"status": "healthy"}
-
-@app.post("/query")
-async def query_agent(request: QueryRequest):
-    prompt = request.query
-    location = request.location
+def _run_query_agent_sync(prompt: str, location: str) -> dict:
+    """CPU/IO-heavy agent logic; runs in a worker thread so the event loop stays responsive."""
     prompt_lower = prompt.lower()
     response_content = ""
-    
+
     try:
         if "iss" in prompt_lower and ("where" in prompt_lower or "pass" in prompt_lower):
             pass_info = agent.get_next_iss_pass(location)
@@ -132,7 +152,7 @@ async def query_agent(request: QueryRequest):
                 response_content = f"The next ISS pass for {location} is at {pass_info.get('rise_time')} with a max elevation of {pass_info.get('max_elevation_deg')}°."
             else:
                 response_content = f"I couldn't find any upcoming ISS passes for {location}."
-                
+
         elif "asteroid" in prompt_lower or "approach" in prompt_lower:
             if any(x in prompt_lower for x in ["next", "upcoming", "closest", "soon"]):
                 approaches = agent.asteroid_monitor.get_next_approaches_from_db(limit=1)
@@ -154,7 +174,7 @@ async def query_agent(request: QueryRequest):
                 words = prompt.split()
                 potential_id_parts = [w for w in words if w.lower() not in ignore_words]
                 search_candidate = " ".join(potential_id_parts).strip()
-                
+
                 found = False
                 profile = None
                 if len(search_candidate) > 2:
@@ -166,7 +186,7 @@ async def query_agent(request: QueryRequest):
                         if matches:
                             profile = agent.get_asteroid_profile(matches[0]['asteroid_id'])
                             found = True
-                
+
                 if found and profile:
                     response_content = f"**Asteroid {profile['asteroid_id']}**:\n- Risk Score: {profile.get('improved_risk_score', 'N/A')}\n- Category: {profile.get('adaptive_risk_category', 'N/A')}\n- Diameter: {profile.get('estimated_diameter_km', 'N/A')} km"
                 else:
@@ -175,7 +195,7 @@ async def query_agent(request: QueryRequest):
                     messages = [HumanMessage(content=f"You are an astronomy assistant. Context: User is in {location}. Question: {prompt}")]
                     ai_msg = llm.invoke(messages)
                     response_content = ai_msg.content
-                    
+
         elif "weather" in prompt_lower or "rainfall" in prompt_lower:
             weather = agent.get_observation_conditions(location)
             if weather:
@@ -188,11 +208,28 @@ async def query_agent(request: QueryRequest):
             messages = [HumanMessage(content=f"You are an astronomy assistant. Context: User is in {location}. Question: {prompt}")]
             ai_msg = llm.invoke(messages)
             response_content = ai_msg.content
-            
+
         return {"response": response_content}
-        
+
     except Exception as e:
         return {"error": str(e)}
+
+
+@app.get("/")
+async def root():
+    return {"message": "AstroGeo API", "version": settings.API_VERSION}
+
+
+@app.get("/health")
+async def health_check():
+    return {"status": "healthy"}
+
+
+@app.post("/query")
+@limiter.limit(os.getenv("RATE_LIMIT_QUERY", "90/minute"))
+async def query_agent(request: Request, body: QueryRequest):
+    async with _QUERY_SEM:
+        return await asyncio.to_thread(_run_query_agent_sync, body.query, body.location)
 
 class GraphQueryRequest(BaseModel):
     query: str
@@ -206,32 +243,34 @@ class GraphQueryResponse(BaseModel):
     processing_time_ms: int
 
 @app.post("/api/graph/query", response_model=GraphQueryResponse)
-async def graph_query(request: GraphQueryRequest):
+@limiter.limit(os.getenv("RATE_LIMIT_GRAPH_QUERY", "40/minute"))
+async def graph_query(request: Request, body: GraphQueryRequest):
     """
     Natural language cross-domain query endpoint.
     Routes through LangGraph: Router → Domain Agents → GraphRAG → Synthesiser.
     Supports astronomy, geospatial, solar weather, and cross-domain queries.
     """
-    if not request.query.strip():
+    if not body.query.strip():
         raise HTTPException(status_code=400, detail="Query cannot be empty")
 
-    if len(request.query) > 500:
+    if len(body.query) > 500:
         raise HTTPException(status_code=400, detail="Query too long (max 500 chars)")
 
     start = time.time()
 
-    try:
-        result = run_query(request.query)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Agent error: {str(e)}")
+    async with _GRAPH_QUERY_SEM:
+        try:
+            result = await asyncio.to_thread(run_query, body.query)
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Agent error: {str(e)}")
 
     elapsed_ms = int((time.time() - start) * 1000)
 
     return GraphQueryResponse(
-        query=request.query,
+        query=body.query,
         domain=result.get('query_domain', 'unknown'),
         answer=result.get('final_answer', 'No answer generated'),
-        evidence_chain=result.get('evidence_chain', []) if request.include_evidence else [],
+        evidence_chain=result.get('evidence_chain', []) if body.include_evidence else [],
         processing_time_ms=elapsed_ms,
     )
 
@@ -328,12 +367,12 @@ async def list_model_cards():
 
 # ── GET /api/verify/{prediction_id} ──────────────────────────
 @app.get("/api/verify/{prediction_id}", response_model=VerificationResult)
-async def verify_prediction(prediction_id: str):
+def verify_prediction(prediction_id: str):
     """
     Fetches a single asteroid prediction and verifies its SHA-256 hash.
     Powers the Verify Predictions page in the Streamlit POC.
     """
-    engine = _get_engine()
+    engine = get_sqlalchemy_engine()
     try:
         with engine.connect() as conn:
             result = conn.execute(text("""
@@ -459,20 +498,18 @@ async def verify_prediction(prediction_id: str):
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-    finally:
-        engine.dispose()
 
 
 # ── Earth Watch Endpoints ─────────────────────────────────────
 
 @app.get("/api/earth/ndvi/{zone}")
-async def get_ndvi_zone(zone: str, year: Optional[int] = 2024):
+def get_ndvi_zone(zone: str, year: Optional[int] = 2024):
     """
     Returns NDVI statistics for a specific zone and year.
     Powers the Vegetation tab on the Earth page.
     """
     try:
-        driver = _get_neo4j_driver()
+        driver = get_neo4j_driver()
         with driver.session(database=os.getenv("NEO4J_DATABASE")) as session:
             result = session.run("""
                 MATCH (z:Zone)-[:HAS_OBSERVATION]->(o:NDVIObservation)
@@ -510,13 +547,13 @@ async def get_ndvi_zone(zone: str, year: Optional[int] = 2024):
 
 
 @app.get("/api/earth/change/{zone}")
-async def get_land_change(zone: str):
+def get_land_change(zone: str):
     """
     Returns land cover change timeline for a zone (2018–2024).
     Powers the Urban + Vegetation change charts.
     """
     try:
-        driver = _get_neo4j_driver()
+        driver = get_neo4j_driver()
         with driver.session(database=os.getenv("NEO4J_DATABASE")) as session:
             rows = session.run("""
                 MATCH (z:Zone)-[:HAS_OBSERVATION]->(o:NDVIObservation)
@@ -557,14 +594,14 @@ async def get_land_change(zone: str):
 
 
 @app.get("/api/earth/live/{zone}/{year}")
-async def get_live_ndvi(zone: str, year: int):
+def get_live_ndvi(zone: str, year: int):
     """
     Returns live or cached NDVI for a zone/year combination.
     Checks PostgreSQL cache first (7-day TTL).
     Powers the live 2025/2026 GEE integration.
     """
     try:
-        driver = _get_neo4j_driver()
+        driver = get_neo4j_driver()
         with driver.session(database=os.getenv("NEO4J_DATABASE")) as session:
             rows = session.run("""
                 MATCH (z:Zone)-[:HAS_OBSERVATION]->(o:NDVIObservation)
@@ -640,7 +677,7 @@ async def delete_aoi(aoi_id: str):
 # ── Agro Endpoints ────────────────────────────────────────────
 
 @app.get("/api/agro/drought/{district}")
-async def get_drought(district: str):
+def get_drought(district: str):
     """
     Returns drought composite index for a district.
     Combines NDVI delta + precipitation anomaly.
@@ -648,7 +685,7 @@ async def get_drought(district: str):
     r = {}
 
     try:
-        driver = _get_neo4j_driver()
+        driver = get_neo4j_driver()
         with driver.session(database=os.getenv("NEO4J_DATABASE")) as session:
             result = session.run("""
                 MATCH (z:Zone)-[:HAS_OBSERVATION]->(o:NDVIObservation)
@@ -807,9 +844,9 @@ async def get_launch_probability():
     }
     data_source = "model-estimate"
 
-    # Try DB — fail fast (3 s timeout already set in _get_engine)
+    # Try DB — use shared pool (no per-request dispose)
     try:
-        engine = _get_engine()
+        engine = get_sqlalchemy_engine()
         with engine.connect() as conn:
             row = conn.execute(text("""
                 SELECT temperature_c, pressure_pa, humidity_pct,
@@ -823,7 +860,6 @@ async def get_launch_probability():
         if row:
             w = dict(row._mapping)
             data_source = "era5-database"
-        engine.dispose()
     except Exception:
         pass  # DB unavailable — use defaults above
 
@@ -942,10 +978,10 @@ async def get_launch_probability():
 @app.get("/api/launch/schedule")
 async def get_launch_schedule():
     """
-    Returns upcoming ISRO launch schedule.
-    Falls back to static upcoming missions if DB is unavailable.
+    Upcoming launches from Launch Library when available, with static fallback.
+    Recent historical rows from Postgres when the launch_history table is present.
     """
-    scheduled = [
+    static_scheduled = [
         {
             "mission":      "PSLV-C59",
             "vehicle":      "PSLV-XL",
@@ -966,10 +1002,46 @@ async def get_launch_schedule():
         },
     ]
 
-    # Try DB for recent historical launches — degrade gracefully if down
-    rows = []
+    scheduled = []
     try:
-        engine = _get_engine()
+        client = _ensure_launch_http_client()
+        resp = await client.get(
+            "https://ll.thespacedevs.com/2.2.0/launch/upcoming/",
+            params={"limit": 12},
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        api_rows = data.get("results", [])
+        for row in api_rows:
+            date_iso = row.get("window_start")
+            days_until = None
+            try:
+                days_until = (
+                    datetime.fromisoformat(date_iso.replace("Z", "+00:00")).date() - datetime.now().date()
+                ).days
+            except Exception:
+                pass
+            scheduled.append({
+                "mission": row.get("name"),
+                "vehicle": (row.get("rocket") or {}).get("configuration", {}).get("full_name"),
+                "date": date_iso,
+                "payload": (row.get("mission") or {}).get("name"),
+                "launch_site": ((row.get("pad") or {}).get("location") or {}).get("name"),
+                "status": (row.get("status") or {}).get("name") or "Scheduled",
+                "launch_probability": None,
+                "days_until": days_until,
+                "success": None,
+                "outcome": (row.get("mission") or {}).get("description"),
+            })
+    except Exception:
+        scheduled = list(static_scheduled)
+
+    if not scheduled:
+        scheduled = list(static_scheduled)
+
+    recent_rows = []
+    try:
+        engine = get_sqlalchemy_engine()
         with engine.connect() as conn:
             upcoming = conn.execute(text("""
                 SELECT mission, vehicle, date,
@@ -978,11 +1050,9 @@ async def get_launch_schedule():
                 FROM launch_history
                 ORDER BY date DESC LIMIT 10
             """)).fetchall()
-        rows = [dict(r._mapping) for r in upcoming]
-        engine.dispose()
+        recent_rows = [dict(r._mapping) for r in upcoming]
     except Exception:
-        # DB unavailable — return static fallback rows
-        rows = [
+        recent_rows = [
             {"mission": "PSLV-C56", "vehicle": "PSLV-CA",  "date": "2023-07-22", "success": True, "notes": "DS-SAR + 6 co-passengers"},
             {"mission": "LVM3-M3",  "vehicle": "LVM3",      "date": "2023-10-22", "success": True, "notes": "36 OneWeb satellites"},
             {"mission": "PSLV-C58", "vehicle": "PSLV-XL",  "date": "2024-01-01", "success": True, "notes": "XPoSat space observatory"},
@@ -991,25 +1061,25 @@ async def get_launch_schedule():
         ]
 
     next_mission = scheduled[0]
-    days_until   = next_mission['days_until']
+    days_until = next_mission.get("days_until")
 
     return {
         "next_mission":       next_mission,
         "countdown":          {"days": days_until, "hours": 0, "minutes": 0},
         "scheduled_launches": scheduled,
-        "recent_launches":    rows,
+        "recent_launches":    recent_rows,
     }
 
 
 # ── GET /api/verify/batch/recent ─────────────────────────────
 @app.get("/api/verify/batch/recent", response_model=BatchVerificationResult)
-async def verify_recent_predictions(limit: int = 10):
+def verify_recent_predictions(limit: int = 10):
     """
     Verifies the N highest-risk predictions in bulk.
     Powers the Recent Predictions list in the Verify UI.
     """
     try:
-        driver = _get_neo4j_driver()
+        driver = get_neo4j_driver()
         with driver.session(database=os.getenv("NEO4J_DATABASE")) as session:
             rows = session.run("""
                 MATCH (a:Asteroid)
@@ -1044,7 +1114,6 @@ async def verify_recent_predictions(limit: int = 10):
                 "hash_preview":        (hash_value[:16] + "...") if hash_value else "",
             })
 
-        engine.dispose()
         return BatchVerificationResult(
             total=       len(results),
             verified=    verified,
@@ -1067,8 +1136,6 @@ async def verify_recent_predictions(limit: int = 10):
             results=mock_asteroids[:limit],
             predictions=mock_asteroids[:limit],
         )
-    finally:
-        engine.dispose()
 
 
 # ── Chat Endpoint (OpenAI-powered, with live data injection) ──
