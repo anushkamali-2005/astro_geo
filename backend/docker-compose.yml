@@ -13,6 +13,10 @@ services:
       - DB_HOST=db
       - DB_PORT=5432
       - DB_NAME=astrogeo
+      - WEB_CONCURRENCY=4
+      - THREAD_POOL_MAX_WORKERS=128
+      - MAX_CONCURRENT_GRAPH_QUERIES=40
+      - MAX_CONCURRENT_QUERY_ENDPOINT=80
       - OPENAI_API_KEY=${OPENAI_API_KEY}
     depends_on:
       db:
@@ -20,6 +24,7 @@ services:
 
   db:
     image: postgres:15
+    command: postgres -c max_connections=250 -c shared_buffers=256MB
     ports:
       - "5433:5432"
     environment:

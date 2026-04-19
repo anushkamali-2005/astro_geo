@@ -24,5 +24,14 @@ COPY launch_model/models/ /app/data/models/launch/
 
 EXPOSE 8000
 
-# Run FastAPI using uvicorn
-CMD ["uvicorn", "backend.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# Multi-worker ASGI: scale WEB_CONCURRENCY; each worker is a process with its own pools.
+ENV WEB_CONCURRENCY=4
+ENV THREAD_POOL_MAX_WORKERS=128
+CMD gunicorn backend.main:app \
+    -k uvicorn.workers.UvicornWorker \
+    --bind 0.0.0.0:8000 \
+    --workers ${WEB_CONCURRENCY} \
+    --timeout 120 \
+    --graceful-timeout 30 \
+    --keep-alive 5 \
+    --worker-tmp-dir /dev/shm

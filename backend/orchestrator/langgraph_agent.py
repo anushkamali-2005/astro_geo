@@ -3,15 +3,44 @@
 from langgraph.graph import StateGraph, START, END
 from langchain_openai import ChatOpenAI
 from typing import TypedDict, Optional
-import psycopg2
+from psycopg2 import pool as pg_pool
 import pandas as pd
-from neo4j import GraphDatabase
 import os
 from dotenv import load_dotenv
+
+from backend.db.pools import get_neo4j_driver
+
 
 # Explicitly load backend/.env since we run from project root
 dotenv_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), '.env')
 load_dotenv(dotenv_path)
+
+# ── PostgreSQL pool (one pool per API worker; avoids connect-per-query) ──
+_pg_pool: Optional[pg_pool.ThreadedConnectionPool] = None
+
+
+def _get_pg_pool() -> pg_pool.ThreadedConnectionPool:
+    global _pg_pool
+    if _pg_pool is None:
+        max_conn = int(os.getenv("LANGGRAPH_PG_POOL_MAX", "12"))
+        _pg_pool = pg_pool.ThreadedConnectionPool(
+            minconn=1,
+            maxconn=max(2, max_conn),
+            dbname=os.getenv("DB_NAME"),
+            user=os.getenv("DB_USER"),
+            password=os.getenv("DB_PASSWORD", ""),
+            host=os.getenv("DB_HOST", "localhost"),
+            port=os.getenv("DB_PORT", "5432"),
+        )
+    return _pg_pool
+
+
+def close_langgraph_pg_pool() -> None:
+    global _pg_pool
+    if _pg_pool is not None:
+        _pg_pool.closeall()
+        _pg_pool = None
+
 
 # ── Shared state ──────────────────────────────────────────────
 class AstroGeoState(TypedDict):
@@ -65,14 +94,10 @@ def astronomy_node(state: AstroGeoState) -> AstroGeoState:
         print("[Astronomy] Skipped — not relevant domain")
         return state
 
+    conn = None
     try:
-        conn = psycopg2.connect(
-            dbname=os.getenv('DB_NAME'),
-            user=os.getenv('DB_USER'),
-            password=os.getenv('DB_PASSWORD', ''),
-            host=os.getenv('DB_HOST', 'localhost'),
-            port=os.getenv('DB_PORT', '5432'),
-        )
+        p = _get_pg_pool()
+        conn = p.getconn()
         df = pd.read_sql("""
             SELECT asteroid_id AS des, risk_category, improved_risk_score,
                    is_anomaly, anomaly_score, cluster
@@ -81,7 +106,6 @@ def astronomy_node(state: AstroGeoState) -> AstroGeoState:
             ORDER BY improved_risk_score DESC
             LIMIT 10
         """, conn)
-        conn.close()
 
         state['asteroid_context'] = {
             'high_risk_count': int(len(df[df['risk_category'] == 'High'])),
@@ -98,6 +122,12 @@ def astronomy_node(state: AstroGeoState) -> AstroGeoState:
     except Exception as e:
         print(f"[Astronomy] DB error: {e}")
         state['asteroid_context'] = {'error': str(e)}
+    finally:
+        if conn is not None:
+            try:
+                _get_pg_pool().putconn(conn)
+            except Exception:
+                pass
 
     return state
 
@@ -107,14 +137,10 @@ def geospatial_node(state: AstroGeoState) -> AstroGeoState:
         print("[Geospatial] Skipped — not relevant domain")
         return state
 
+    conn = None
     try:
-        conn = psycopg2.connect(
-            dbname=os.getenv('DB_NAME'),
-            user=os.getenv('DB_USER'),
-            password=os.getenv('DB_PASSWORD', ''),
-            host=os.getenv('DB_HOST', 'localhost'),
-            port=os.getenv('DB_PORT', '5432'),
-        )
+        p = _get_pg_pool()
+        conn = p.getconn()
         df = pd.read_sql("""
             SELECT zone_name, year, ndvi_mean,
                    change_class_label, confidence,
@@ -125,7 +151,6 @@ def geospatial_node(state: AstroGeoState) -> AstroGeoState:
             ORDER BY delta_total_mean ASC
             LIMIT 10
         """, conn)
-        conn.close()
 
         state['geospatial_context'] = {
             'vegetation_loss_zones': df[
@@ -146,6 +171,12 @@ def geospatial_node(state: AstroGeoState) -> AstroGeoState:
     except Exception as e:
         print(f"[Geospatial] DB error: {e}")
         state['geospatial_context'] = {'error': str(e)}
+    finally:
+        if conn is not None:
+            try:
+                _get_pg_pool().putconn(conn)
+            except Exception:
+                pass
 
     return state
 
@@ -163,15 +194,10 @@ def solar_node(state: AstroGeoState) -> AstroGeoState:
         return state
 
     try:
-        driver = GraphDatabase.driver(
-            os.getenv('NEO4J_URI'),
-            auth=(
-                os.getenv('NEO4J_USERNAME', os.getenv('NEO4J_USER', 'neo4j')),
-                os.getenv('NEO4J_PASSWORD')
-            )
-        )
+        driver = get_neo4j_driver()
+        db_name = os.getenv("NEO4J_DATABASE")
 
-        with driver.session() as session:
+        with driver.session(database=db_name) as session:
 
             # 1. Recent high-impact solar events
             recent_events = session.run("""
@@ -215,8 +241,6 @@ def solar_node(state: AstroGeoState) -> AstroGeoState:
                 ORDER BY storm_count DESC
             """).data()
 
-        driver.close()
-
         state['solar_context'] = {
             'recent_high_risk_events': recent_events,
             'cross_domain_impacts':    cross_domain,
@@ -241,15 +265,10 @@ def solar_node(state: AstroGeoState) -> AstroGeoState:
 # ── Node 5: GraphRAG Node ─────────────────────────────────────
 def graphrag_node(state: AstroGeoState) -> AstroGeoState:
     try:
-        driver = GraphDatabase.driver(
-            os.getenv('NEO4J_URI'),
-            auth=(
-                os.getenv('NEO4J_USERNAME', os.getenv('NEO4J_USER', 'neo4j')),
-                os.getenv('NEO4J_PASSWORD')
-            )
-        )
+        driver = get_neo4j_driver()
+        db_name = os.getenv("NEO4J_DATABASE")
 
-        with driver.session() as session:
+        with driver.session(database=db_name) as session:
             if state['query_domain'] == 'solar':
                 # Solar-specific multi-hop already handled in solar_node
                 # GraphRAG adds the agriculture connection on top
@@ -302,8 +321,6 @@ def graphrag_node(state: AstroGeoState) -> AstroGeoState:
                     ORDER BY c.confidence DESC
                     LIMIT 5
                 """).data()
-
-        driver.close()
 
         state['graph_context'] = results
         state['evidence_chain'].append({
@@ -411,11 +428,22 @@ def build_astrogeo_graph():
 
     return graph.compile()
 
+
+# ── Compiled graph (rebuilding on every request exhausts CPU under load) ──
+_compiled_graph = None
+
+
+def _get_compiled_graph():
+    global _compiled_graph
+    if _compiled_graph is None:
+        _compiled_graph = build_astrogeo_graph()
+    return _compiled_graph
+
+
 # ── Public API ────────────────────────────────────────────────
 def run_query(query: str) -> dict:
-    app = build_astrogeo_graph()
     initial_state = {"query": query, "evidence_chain": []}
-    return app.invoke(initial_state)
+    return _get_compiled_graph().invoke(initial_state)
 
 # ── Test ──────────────────────────────────────────────────────
 if __name__ == '__main__':
