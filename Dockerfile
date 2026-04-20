@@ -18,7 +18,7 @@ RUN pip install --no-cache-dir -r launch_reqs.txt \
 RUN mkdir -p /app/backend/data/models/launch
 
 # Copy application files
-COPY .env .env
+# Environment variables are provided by Render at runtime, so do not copy a local .env.
 COPY backend/ /app/backend/
 COPY launch_model/models/ /app/data/models/launch/
 
