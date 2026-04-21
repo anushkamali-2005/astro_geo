@@ -56,6 +56,7 @@ class AstroGeoState(TypedDict):
     simplify:           bool          # plain English mode
     temporal_intent:    str           # 'recent' | 'historical' | 'any'
     asteroid_context:   Optional[dict]
+    launch_context:     Optional[dict]
     geospatial_context: Optional[dict]
     agro_context:       Optional[dict]
     solar_context:      Optional[dict]
