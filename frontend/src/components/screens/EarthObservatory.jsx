@@ -247,18 +247,44 @@ function VegetationTab({ geoData }) {
 function DroughtTab({ geoData }) {
   const { homeCity } = useAppShell()
   const [district,     setDistrict]     = useState('Maharashtra')
+  const [year,         setYear]         = useState('2026')
   const [droughtData,  setDroughtData]  = useState(null)
+  const [allDrought,   setAllDrought]   = useState({})
   const [loading,      setLoading]      = useState(false)
 
-  const DISTRICTS = ['Maharashtra', 'Marathwada', 'Vidarbha', 'Punjab', 'Rajasthan', 'Tamil Nadu', 'Karnataka']
+  const DISTRICTS = ['Maharashtra', 'Marathwada', 'Vidarbha', 'Punjab', 'Rajasthan', 'Tamil Nadu', 'Karnataka',
+                     'Uttar Pradesh', 'West Bengal', 'Gujarat', 'Madhya Pradesh', 'Andhra Pradesh', 'Bihar', 'Odisha']
+  const YEARS = ['2026', '2025', '2024', '2023', '2022', '2021']
 
   useEffect(() => {
     setLoading(true)
-    api.getDrought(district).then(data => {
-      setDroughtData(data)
+    const yearParam = year ? `?year=${year}` : ''
+
+    // Fetch selected district + all districts for map coverage in parallel
+    const selectedPromise = fetch(
+      `${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/agro/drought/${encodeURIComponent(district)}${yearParam}`,
+      { cache: 'no-store' }
+    ).then(r => r.ok ? r.json() : null).catch(() => null)
+
+    const allPromises = DISTRICTS.map(d =>
+      fetch(
+        `${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/agro/drought/${encodeURIComponent(d)}${yearParam}`,
+        { cache: 'no-store' }
+      ).then(r => r.ok ? r.json() : null).catch(() => null)
+    )
+
+    Promise.all([selectedPromise, Promise.all(allPromises)]).then(([selected, all]) => {
+      setDroughtData(selected)
+      const metricsObj = {}
+      all.forEach((res, idx) => {
+        if (res?.drought_score != null) {
+          metricsObj[DISTRICTS[idx]] = res.drought_score
+        }
+      })
+      setAllDrought(metricsObj)
       setLoading(false)
     }).catch(() => setLoading(false))
-  }, [district])
+  }, [district, year])
 
   const severityColor = {
     Severe:   'border-red-500 text-red-500',
@@ -284,8 +310,12 @@ function DroughtTab({ geoData }) {
               >
                 {DISTRICTS.map(d => <option key={d}>{d}</option>)}
               </select>
-              <select className="bg-slate-900/80 border border-slate-700 text-slate-300 text-xs rounded-lg px-2 py-1.5 outline-none">
-                <option>Kharif 2025</option>
+              <select
+                value={year}
+                onChange={e => setYear(e.target.value)}
+                className="bg-slate-900/80 border border-emerald-500/50 text-emerald-400 font-bold text-xs rounded-lg px-2 py-1.5 outline-none"
+              >
+                {YEARS.map(y => <option key={y}>{y}</option>)}
               </select>
             </div>
           </div>
@@ -295,6 +325,7 @@ function DroughtTab({ geoData }) {
                  className="w-full h-full absolute inset-0 rounded-xl"
                  zone={district}
                  metricValue={droughtData?.drought_score}
+                 allMetrics={allDrought}
                  mode="drought"
                  geoJsonData={geoData}
              />
