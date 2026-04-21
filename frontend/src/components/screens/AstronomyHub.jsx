@@ -115,27 +115,32 @@ function AsteroidsTab() {
 
   useEffect(() => {
     let cancelled = false
+    const controller = new AbortController()
     const loadApproaches = async () => {
       setLoading(true)
       setError(null)
       try {
         const params = new URLSearchParams({ days: String(days), distanceAU, minDiameter })
-        const res = await fetch(`/api/neo-approaches?${params}`)
+        const res = await fetch(`/api/neo-approaches?${params}`, { signal: controller.signal, cache: 'no-store' })
         if (!res.ok) {
           const body = await res.text()
-          throw new Error(body || `NeoWS ${res.status}`)
+          throw new Error(body || 'Asteroid feed temporarily unavailable')
         }
         const data = await res.json()
         if (!cancelled) setApproaches(data.approaches || [])
       } catch (err) {
-        if (!cancelled) setError(err?.message || 'Unable to load asteroid close approaches.')
+        if (!cancelled && err?.name !== 'AbortError') {
+          setError('Live asteroid feed is rate-limited right now. Please retry in a few seconds.')
+        }
       } finally {
         if (!cancelled) setLoading(false)
       }
     }
-    loadApproaches()
+    const timer = setTimeout(loadApproaches, 250)
     return () => {
       cancelled = true
+      controller.abort()
+      clearTimeout(timer)
     }
   }, [days, distanceAU, minDiameter])
 

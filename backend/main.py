@@ -669,6 +669,135 @@ def _sanitize_float(val):
     except (ValueError, TypeError):
         return None
 
+
+def _expand_zone_aliases(zone_name: str) -> list[str]:
+    """
+    Expand composite zone labels (e.g., "Punjab_Haryana_Delhi") into state names.
+    """
+    import re
+    clean = (zone_name or "").strip()
+    if not clean:
+        return []
+    lower = clean.lower().replace("_", " ")
+
+    if "maharashtra" in lower:
+        return ["Maharashtra"]
+
+    # Split known composite separators and remove bracketed suffixes.
+    parts = [re.sub(r"\(.*?\)", "", p).strip() for p in re.split(r"[,/]| and ", lower)]
+    if len(parts) == 1 and " " in parts[0]:
+        # Handle labels like "punjab haryana delhi"
+        tokens = [t for t in parts[0].split() if t]
+        if len(tokens) > 1 and all(len(t) > 2 for t in tokens):
+            parts = tokens
+
+    expanded: list[str] = []
+    for part in parts:
+        if not part:
+            continue
+        expanded.append(" ".join(w.capitalize() for w in part.split()))
+    return list(dict.fromkeys(expanded))
+
+
+@app.get("/api/earth/zones")
+def get_earth_zones():
+    """
+    Returns available Earth monitoring zones from SQL and checks Neo4j coverage.
+    """
+    try:
+        engine = get_sqlalchemy_engine()
+        with engine.connect() as conn:
+            rows = conn.execute(text("""
+                SELECT LOWER(zone_name) AS zone_name, COUNT(*) AS row_count
+                FROM astronomy.ndvi_results
+                GROUP BY LOWER(zone_name)
+                ORDER BY zone_name
+            """)).mappings().fetchall()
+
+        sql_zones = [r["zone_name"] for r in rows]
+        state_map = {}
+        for zone in sql_zones:
+            for state in _expand_zone_aliases(zone):
+                state_map.setdefault(state, []).append(zone)
+
+        neo4j_zones = set()
+        neo4j_available = False
+        neo4j_error = None
+        try:
+            driver = get_neo4j_driver()
+            with driver.session(database=os.getenv("NEO4J_DATABASE")) as session:
+                neo_rows = session.run("""
+                    MATCH (z:Zone)
+                    RETURN toLower(z.name) AS zone_name
+                """).data()
+            neo4j_available = True
+            neo4j_zones = {r["zone_name"] for r in neo_rows if r.get("zone_name")}
+        except Exception as exc:
+            neo4j_error = str(exc)
+
+        missing_in_neo4j = sorted([z for z in sql_zones if z not in neo4j_zones]) if neo4j_available else sql_zones
+
+        return {
+            "zones": sql_zones,
+            "states": sorted(state_map.keys()),
+            "zone_to_states": {k: _expand_zone_aliases(k) for k in sql_zones},
+            "state_to_zones": {k: sorted(v) for k, v in state_map.items()},
+            "neo4j": {
+                "available": neo4j_available,
+                "missing_zones": missing_in_neo4j,
+                "error": neo4j_error,
+            }
+        }
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"Earth zones unavailable: {e}")
+
+
+@app.post("/api/earth/zones/sync-neo4j")
+def sync_earth_zones_to_neo4j():
+    """
+    Backfill missing NDVI zone observations from SQL into Neo4j graph.
+    """
+    try:
+        driver = get_neo4j_driver()
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"Neo4j unavailable: {e}")
+
+    try:
+        engine = get_sqlalchemy_engine()
+        with engine.connect() as conn:
+            rows = conn.execute(text("""
+                SELECT zone_name, year, ndvi_mean, change_class_label, confidence, delta_total_mean
+                FROM astronomy.ndvi_results
+            """)).mappings().fetchall()
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"SQL source unavailable: {e}")
+
+    created = 0
+    with driver.session(database=os.getenv("NEO4J_DATABASE")) as session:
+        for row in rows:
+            zone_name = str(row.get("zone_name") or "").strip()
+            if not zone_name:
+                continue
+            payload = {
+                "zone_name": zone_name,
+                "year": int(row.get("year") or 0),
+                "ndvi_mean": _sanitize_float(row.get("ndvi_mean")),
+                "change_label": row.get("change_class_label"),
+                "confidence": _sanitize_float(row.get("confidence")),
+                "delta_total": _sanitize_float(row.get("delta_total_mean")),
+            }
+            session.run("""
+                MERGE (z:Zone {name: $zone_name})
+                MERGE (z)-[:HAS_OBSERVATION]->(o:NDVIObservation {zone_name: $zone_name, year: $year})
+                SET o.ndvi_mean = $ndvi_mean,
+                    o.change_label = $change_label,
+                    o.confidence = $confidence,
+                    o.delta_total = $delta_total
+            """, payload)
+            created += 1
+
+    return {"synced_rows": created, "status": "ok"}
+
 @app.get("/api/earth/ndvi/{zone}")
 def get_ndvi_zone(zone: str, year: Optional[int] = 2024):
     """

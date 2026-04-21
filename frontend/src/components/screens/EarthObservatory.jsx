@@ -36,12 +36,22 @@ function getMapUrl(tab) {
   return base
 }
 
-const ZONES = ['Maharashtra', 'Punjab', 'Rajasthan', 'Tamil Nadu', 'West Bengal', 'Karnataka', 'Uttar Pradesh']
+const DEFAULT_ZONES = [
+  'Andhra Pradesh', 'Bihar', 'Gujarat', 'Himachal Pradesh', 'Karnataka',
+  'Madhya Pradesh', 'Maharashtra', 'Odisha', 'Punjab', 'Rajasthan',
+  'Tamil Nadu', 'Telangana', 'Uttar Pradesh', 'West Bengal',
+]
+
+function unique(values) {
+  return Array.from(new Set(values.filter(Boolean)))
+}
 
 // ── Vegetation Tab ───────────────────────────────────────────────
 function VegetationTab({ geoData }) {
   const { homeCity } = useAppShell()
   const [zone,     setZone]     = useState('Maharashtra')
+  const [zones,    setZones]    = useState(DEFAULT_ZONES)
+  const [zoneToStates, setZoneToStates] = useState({})
   const [year,     setYear]     = useState('2026 Live')
   const [ndviData, setNdviData] = useState(null)
   const [change,   setChange]   = useState(null)
@@ -51,13 +61,29 @@ function VegetationTab({ geoData }) {
   const YEARS = ['2026 Live', '2025', '2024', '2023', '2022', '2021']
 
   useEffect(() => {
+    let cancelled = false
+    api.getEarthZones().then((res) => {
+      if (cancelled || !res) return
+      const fromStates = Array.isArray(res.states) ? res.states : []
+      const merged = unique([...fromStates, ...DEFAULT_ZONES]).sort((a, b) => a.localeCompare(b))
+      if (merged.length > 0) setZones(merged)
+      if (res.zone_to_states && typeof res.zone_to_states === 'object') {
+        setZoneToStates(res.zone_to_states)
+      }
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  useEffect(() => {
     setLoading(true)
     const activeYear = year === '2026 Live' ? 2026 : parseInt(year, 10)
     const ndviPromise = year === '2026 Live' 
           ? api.getLiveNDVI(zone, activeYear) 
           : api.getNDVI(zone, activeYear)
 
-    const allNdviPromises = ZONES.map(z => 
+    const allNdviPromises = zones.map(z =>
           year === '2026 Live' ? api.getLiveNDVI(z, activeYear) : api.getNDVI(z, activeYear)
     )
 
@@ -72,14 +98,22 @@ function VegetationTab({ geoData }) {
       const metricsObj = {}
       allNdviRes.forEach((res, idx) => {
          if (res?.summary?.mean_ndvi != null) {
-            metricsObj[ZONES[idx]] = res.summary.mean_ndvi
+            const selectedZone = zones[idx]
+            metricsObj[selectedZone] = res.summary.mean_ndvi
+            const sourceZone = String(res?.zone || '').toLowerCase()
+            const expandedStates = zoneToStates[sourceZone]
+            if (Array.isArray(expandedStates)) {
+              expandedStates.forEach((state) => {
+                metricsObj[state] = res.summary.mean_ndvi
+              })
+            }
          }
       })
       setAllMetrics(metricsObj)
       
       setLoading(false)
     }).catch(() => setLoading(false))
-  }, [zone, year])
+  }, [zone, year, zones, zoneToStates])
 
   // Pull the most significant change from the timeline
   const latestChanges = (() => {
@@ -108,7 +142,7 @@ function VegetationTab({ geoData }) {
                 onChange={e => setZone(e.target.value)}
                 className="bg-slate-900/80 border border-slate-700 text-slate-300 text-sm rounded-lg px-3 py-1.5 outline-none focus:border-cyan-500"
               >
-                {ZONES.map(z => <option key={z}>{z}</option>)}
+                {zones.map(z => <option key={z}>{z}</option>)}
               </select>
               <select
                 value={year}
@@ -247,14 +281,26 @@ function VegetationTab({ geoData }) {
 function DroughtTab({ geoData }) {
   const { homeCity } = useAppShell()
   const [district,     setDistrict]     = useState('Maharashtra')
+  const [districts,    setDistricts]    = useState(DEFAULT_ZONES)
   const [year,         setYear]         = useState('2026')
   const [droughtData,  setDroughtData]  = useState(null)
   const [allDrought,   setAllDrought]   = useState({})
   const [loading,      setLoading]      = useState(false)
 
-  const DISTRICTS = ['Maharashtra', 'Marathwada', 'Vidarbha', 'Punjab', 'Rajasthan', 'Tamil Nadu', 'Karnataka',
-                     'Uttar Pradesh', 'West Bengal', 'Gujarat', 'Madhya Pradesh', 'Andhra Pradesh', 'Bihar', 'Odisha']
   const YEARS = ['2026', '2025', '2024', '2023', '2022', '2021']
+
+  useEffect(() => {
+    let cancelled = false
+    api.getEarthZones().then((res) => {
+      if (cancelled || !res) return
+      const fromStates = Array.isArray(res.states) ? res.states : []
+      const merged = unique([...fromStates, ...DEFAULT_ZONES]).sort((a, b) => a.localeCompare(b))
+      if (merged.length > 0) setDistricts(merged)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
   useEffect(() => {
     setLoading(true)
@@ -266,7 +312,7 @@ function DroughtTab({ geoData }) {
       { cache: 'no-store' }
     ).then(r => r.ok ? r.json() : null).catch(() => null)
 
-    const allPromises = DISTRICTS.map(d =>
+    const allPromises = districts.map(d =>
       fetch(
         `${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/agro/drought/${encodeURIComponent(d)}${yearParam}`,
         { cache: 'no-store' }
@@ -278,13 +324,13 @@ function DroughtTab({ geoData }) {
       const metricsObj = {}
       all.forEach((res, idx) => {
         if (res?.drought_score != null) {
-          metricsObj[DISTRICTS[idx]] = res.drought_score
+          metricsObj[districts[idx]] = res.drought_score
         }
       })
       setAllDrought(metricsObj)
       setLoading(false)
     }).catch(() => setLoading(false))
-  }, [district, year])
+  }, [district, year, districts])
 
   const severityColor = {
     Severe:   'border-red-500 text-red-500',
@@ -308,7 +354,7 @@ function DroughtTab({ geoData }) {
                 onChange={e => setDistrict(e.target.value)}
                 className="bg-slate-900/80 border border-slate-700 text-slate-300 text-xs rounded-lg px-2 py-1.5 outline-none"
               >
-                {DISTRICTS.map(d => <option key={d}>{d}</option>)}
+                {districts.map(d => <option key={d}>{d}</option>)}
               </select>
               <select
                 value={year}
