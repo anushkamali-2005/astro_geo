@@ -60,6 +60,7 @@ services:
     environment:
       - GF_SECURITY_ADMIN_PASSWORD=admin
       - GF_USERS_ALLOW_SIGN_UP=false
+      - PROMETHEUS_URL=http://prometheus:9090
 
   mlflow:
     image: ghcr.io/mlflow/mlflow:v2.14.2
