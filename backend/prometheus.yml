@@ -1,17 +1,19 @@
 global:
-  scrape_interval: 15s # How frequently to scrape targets
+  scrape_interval: 15s
   evaluation_interval: 15s
 
 scrape_configs:
-  - job_name: 'prometheus'
+  # Local Docker Compose only.
+  - job_name: "prometheus"
     static_configs:
-      - targets: ['localhost:9090']
+      - targets: ["localhost:9090"]
 
-  - job_name: 'fastapi_app'
-    metrics_path: '/metrics'
+  # Local backend container target (service name "api").
+  - job_name: "fastapi_app"
+    metrics_path: "/metrics"
     static_configs:
-      - targets: ['api:8000'] # Using Docker Compose service name 'api'
+      - targets: ["api:8000"]
 
-  - job_name: 'mlflow'
+  - job_name: "mlflow"
     static_configs:
-      - targets: ['mlflow:5000']
+      - targets: ["mlflow:5000"]

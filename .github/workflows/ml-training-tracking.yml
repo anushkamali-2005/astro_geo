@@ -1,0 +1,56 @@
+name: ML Training + DagsHub Tracking
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["main"]
+    paths:
+      - "launch_model/**"
+      - ".github/workflows/ml-training-tracking.yml"
+
+jobs:
+  train-and-track:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      TRACKING_ENABLED: "true"
+      DAGSHUB_USERNAME: ${{ secrets.DAGSHUB_USERNAME }}
+      DAGSHUB_REPO: ${{ secrets.DAGSHUB_REPO }}
+      DAGSHUB_TOKEN: ${{ secrets.DAGSHUB_TOKEN }}
+      ENV: "ci"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install training dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+        working-directory: launch_model
+
+      - name: Validate tracking secrets
+        run: |
+          test -n "$DAGSHUB_USERNAME"
+          test -n "$DAGSHUB_REPO"
+          test -n "$DAGSHUB_TOKEN"
+
+      - name: Run model training with MLflow logging
+        run: python 04_train_model.py
+        working-directory: launch_model
+
+      - name: Upload metrics artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: launch-model-metrics
+          path: |
+            launch_model/metrics/**
+            launch_model/plots/**
+            launch_model/models/feature_cols.json
+          if-no-files-found: warn

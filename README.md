@@ -145,3 +145,27 @@ npm run dev
 ---
 
 > AstroGeo is actively engineered as a holistic AI anomaly-detection testbed, connecting orbital, atmospheric, and terrestrial disciplines into a unified decision dashboard.
+
+---
+
+## Production Monitoring + ML Tracking
+
+### 1) Render backend metrics for Prometheus
+- Backend already exposes Prometheus metrics at `GET /metrics`.
+- Use `backend/prometheus.render.yml` for production scraping.
+- Replace `your-backend-service.onrender.com` with your Render API hostname.
+
+### 2) Grafana datasource wiring
+- Grafana datasource is env-driven via `PROMETHEUS_URL`.
+- Local Docker Compose uses `PROMETHEUS_URL=http://prometheus:9090`.
+- For cloud Grafana, set `PROMETHEUS_URL` to your hosted Prometheus endpoint.
+
+### 3) DagsHub + MLflow experiment logging
+- GitHub Action `.github/workflows/ml-training-tracking.yml` runs `launch_model/04_train_model.py`.
+- It logs metrics like F1, R2, MAE, RMSE, confusion matrix, and SHAP artifacts through MLflow.
+- Configure repository secrets:
+  - `DAGSHUB_USERNAME`
+  - `DAGSHUB_REPO`
+  - `DAGSHUB_TOKEN`
+
+After the workflow runs, open your DagsHub MLflow page (`https://dagshub.com/<user>/<repo>.mlflow`) to view experiments and metrics.

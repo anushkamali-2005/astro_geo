@@ -1,0 +1,16 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: "prometheus"
+    static_configs:
+      - targets: ["localhost:9090"]
+
+  # Production backend scrape target for Render-hosted API.
+  # Replace with your Render backend hostname (without https://).
+  - job_name: "astrogeo_render_api"
+    scheme: https
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["astrogeo-backend.onrender.com"]
