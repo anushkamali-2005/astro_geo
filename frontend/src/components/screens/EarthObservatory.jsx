@@ -460,40 +460,110 @@ function EONETLiveTab({ categoryHint, title }) {
   const layersByCategory = layersData?.categories ?? []
   const selectedCategory = categories.find(c => c.id === categoryHint)
   const selectedLayers = (layersByCategory.find(c => c.id === categoryHint)?.layers ?? []).slice(0, 8)
+  const activeCount = events.filter(event => event.closed == null).length
+  const closedCount = Math.max(events.length - activeCount, 0)
+
+  const formatEventTime = (rawDate) => {
+    if (!rawDate) return 'Unknown time'
+    const date = new Date(rawDate)
+    if (Number.isNaN(date.getTime())) return 'Unknown time'
+    return date.toLocaleString()
+  }
+
+  const getEventFreshness = (rawDate) => {
+    if (!rawDate) return 'Historic'
+    const now = Date.now()
+    const ts = new Date(rawDate).getTime()
+    if (Number.isNaN(ts)) return 'Historic'
+    const hours = Math.floor((now - ts) / (1000 * 60 * 60))
+    if (hours < 24) return 'Breaking'
+    if (hours < 72) return 'Active'
+    return 'Historic'
+  }
 
   return (
     <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -10 }} className="grid grid-cols-1 lg:grid-cols-12 gap-6">
       <div className="lg:col-span-8">
         <GlassPanel className="p-6">
-          <h2 className="font-display font-semibold text-lg text-white mb-1">{title} (Live NASA EONET)</h2>
-          <p className="text-xs text-slate-400 mb-5">
-            Source: <a className="text-cyan-400 hover:text-cyan-300" href="https://eonet.gsfc.nasa.gov/api/v3/events" target="_blank" rel="noreferrer">EONET Events API</a>
-          </p>
+          <div className="mb-5">
+            <div className="flex flex-wrap items-center justify-between gap-3 mb-2">
+              <h2 className="font-display font-semibold text-lg text-white">{title} (Live NASA EONET)</h2>
+              <div className="flex flex-wrap gap-2">
+                <span className="px-2.5 py-1 rounded-full text-[11px] font-semibold bg-emerald-500/15 text-emerald-300 border border-emerald-500/40">
+                  Active {activeCount}
+                </span>
+                <span className="px-2.5 py-1 rounded-full text-[11px] font-semibold bg-slate-800/90 text-slate-300 border border-slate-600">
+                  Closed {closedCount}
+                </span>
+                <span className="px-2.5 py-1 rounded-full text-[11px] font-semibold bg-cyan-500/15 text-cyan-300 border border-cyan-500/40">
+                  Window 120d
+                </span>
+              </div>
+            </div>
+            <p className="text-xs text-slate-400">
+              Source: <a className="text-cyan-400 hover:text-cyan-300" href="https://eonet.gsfc.nasa.gov/api/v3/events" target="_blank" rel="noreferrer">EONET Events API</a>
+            </p>
+          </div>
 
           {loading ? (
             <div className="h-80 flex items-center justify-center">
               <div className="w-10 h-10 border-4 border-cyan-500/30 border-t-cyan-500 rounded-full animate-spin" />
             </div>
           ) : events.length === 0 ? (
-            <div className="h-80 flex items-center justify-center text-slate-400 text-sm border border-slate-700 rounded-xl">
-              No live events currently available for this category.
+            <div className="h-80 rounded-2xl border border-cyan-500/25 bg-gradient-to-br from-cyan-500/10 via-slate-900/80 to-blue-950/50 relative overflow-hidden">
+              <div className="absolute -top-20 -right-16 h-40 w-40 rounded-full bg-cyan-500/20 blur-2xl" />
+              <div className="absolute -bottom-24 -left-20 h-48 w-48 rounded-full bg-indigo-500/20 blur-2xl" />
+              <div className="h-full flex flex-col items-center justify-center text-center px-6">
+                <div className="w-16 h-16 rounded-full border border-cyan-400/40 bg-cyan-500/10 flex items-center justify-center mb-4 animate-pulse">
+                  <span className="text-2xl">📡</span>
+                </div>
+                <h3 className="text-lg font-semibold text-cyan-100">Quiet Orbit, Sensors Ready</h3>
+                <p className="text-sm text-slate-300 mt-2 max-w-md">
+                  No active incidents are currently detected for this category. Data stream is healthy and continuously monitoring for new events.
+                </p>
+                <p className="text-[11px] text-slate-400 mt-3">Tip: switch category to explore other live global incident signals.</p>
+              </div>
             </div>
           ) : (
             <div className="space-y-3 max-h-[560px] overflow-auto pr-1">
               {events.map((event) => {
                 const latestGeom = event.geometry?.[event.geometry.length - 1]
-                const when = latestGeom?.date ? new Date(latestGeom.date).toLocaleString() : 'Unknown time'
+                const when = formatEventTime(latestGeom?.date)
                 const firstCategory = event.categories?.[0]?.title ?? 'Uncategorized'
+                const freshness = getEventFreshness(latestGeom?.date)
                 return (
-                  <div key={event.id} className="border border-slate-700 rounded-xl p-4 bg-slate-900/40">
-                    <div className="flex items-start justify-between gap-4">
-                      <div>
-                        <div className="font-semibold text-white">{event.title}</div>
-                        <div className="text-xs text-slate-400 mt-1">{firstCategory} • {when}</div>
+                  <div key={event.id} className="border border-slate-700/80 rounded-xl p-4 bg-gradient-to-r from-slate-900/70 to-slate-900/30 hover:border-cyan-500/40 transition-colors">
+                    <div className="flex items-start justify-between gap-4 mb-3">
+                      <div className="min-w-0">
+                        <div className="font-semibold text-white truncate">{event.title}</div>
+                        <div className="text-xs text-slate-400 mt-1">{firstCategory}</div>
                       </div>
-                      <a href={event.link} target="_blank" rel="noreferrer" className="text-xs text-cyan-400 hover:text-cyan-300">
+                      <a href={event.link} target="_blank" rel="noreferrer" className="text-xs text-cyan-400 hover:text-cyan-300 whitespace-nowrap">
                         Open event
                       </a>
+                    </div>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="px-2 py-1 rounded-md text-[11px] border border-slate-600 bg-slate-800/80 text-slate-300">
+                        {when}
+                      </span>
+                      <span
+                        className={cn(
+                          "px-2 py-1 rounded-md text-[11px] border font-medium",
+                          freshness === 'Breaking' && "border-rose-500/40 bg-rose-500/15 text-rose-200",
+                          freshness === 'Active' && "border-amber-500/40 bg-amber-500/15 text-amber-200",
+                          freshness === 'Historic' && "border-slate-600 bg-slate-800/80 text-slate-300"
+                        )}
+                      >
+                        {freshness}
+                      </span>
+                      <span className={cn(
+                        "px-2 py-1 rounded-md text-[11px] border font-medium",
+                        event.closed == null
+                          ? "border-emerald-500/40 bg-emerald-500/15 text-emerald-200"
+                          : "border-slate-600 bg-slate-800/80 text-slate-300"
+                      )}>
+                        {event.closed == null ? 'Open' : 'Closed'}
+                      </span>
                     </div>
                   </div>
                 )
@@ -505,15 +575,19 @@ function EONETLiveTab({ categoryHint, title }) {
 
       <div className="lg:col-span-4">
         <GlassPanel className="p-6 h-full">
-          <h3 className="font-display font-semibold text-white mb-4">Category + Layers</h3>
-          <div className="text-xs text-slate-400 mb-3">
+          <h3 className="font-display font-semibold text-white mb-2">Category Intelligence</h3>
+          <div className="text-[11px] text-cyan-400 mb-3 uppercase tracking-wide">Linked EONET layers</div>
+          <div className="text-xs text-slate-400 mb-4">
             {selectedCategory?.description ?? 'No category description available.'}
           </div>
           <div className="space-y-2 max-h-[500px] overflow-auto pr-1">
             {selectedLayers.length > 0 ? selectedLayers.map((layer) => (
-              <div key={`${layer.name}-${layer.serviceUrl}`} className="p-3 rounded-lg border border-slate-700 bg-slate-900/50">
+              <div key={`${layer.name}-${layer.serviceUrl}`} className="p-3 rounded-lg border border-slate-700 bg-slate-900/50 hover:border-cyan-500/40 transition-colors">
                 <div className="text-sm text-slate-200">{layer.name}</div>
-                <div className="text-[11px] text-slate-400 mt-1">{layer.serviceTypeId}</div>
+                <div className="text-[11px] text-slate-400 mt-1 flex items-center justify-between gap-3">
+                  <span>{layer.serviceTypeId}</span>
+                  <span className="text-cyan-400">Live layer</span>
+                </div>
               </div>
             )) : (
               <div className="text-sm text-slate-500">No layers listed for this category.</div>
