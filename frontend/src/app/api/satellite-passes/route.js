@@ -40,7 +40,7 @@ export async function GET(request) {
     return NextResponse.json({ error: 'Missing required parameters' }, { status: 400 })
   }
 
-  const apiKey = process.env.N2YO_API_KEY
+  const apiKey = process.env.N2YO_API_KEY || 'SQ77HD-NGXBAM-KGZUJM-5PTF'
 
   // No API key → immediately return realistic mock passes
   if (!apiKey || apiKey === 'dummy_key' || apiKey === '') {
