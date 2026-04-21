@@ -657,6 +657,18 @@ def verify_prediction(prediction_id: str):
 
 # ── Earth Watch Endpoints ─────────────────────────────────────
 
+def _sanitize_float(val):
+    import math
+    if val is None:
+        return None
+    try:
+        fval = float(val)
+        if math.isnan(fval) or math.isinf(fval):
+            return None
+        return fval
+    except (ValueError, TypeError):
+        return None
+
 @app.get("/api/earth/ndvi/{zone}")
 def get_ndvi_zone(zone: str, year: Optional[int] = 2024):
     """
@@ -700,11 +712,11 @@ def get_ndvi_zone(zone: str, year: Optional[int] = 2024):
         return {
             "zone":       zone,
             "year":       year,
-            "results":    rows,
+            "results":    [{k: _sanitize_float(v) if isinstance(v, float) else v for k, v in r.items()} for r in rows],
             "summary": {
-                "mean_ndvi":      float(np.mean([r['ndvi_mean'] for r in rows])),
+                "mean_ndvi":      _sanitize_float(np.mean([r['ndvi_mean'] for r in rows if r['ndvi_mean'] is not None])),
                 "dominant_class": rows[0]['change_class_label'],
-                "avg_confidence": float(np.mean([r['confidence'] for r in rows])),
+                "avg_confidence": _sanitize_float(np.mean([r['confidence'] for r in rows if r['confidence'] is not None])),
             }
         }
     except HTTPException:
@@ -744,10 +756,10 @@ def get_land_change(zone: str):
                 timeline[yr] = []
             timeline[yr].append({
                 "zone_name":    r['zone_name'],
-                "ndvi_mean":    r['ndvi_mean'],
+                "ndvi_mean":    _sanitize_float(r['ndvi_mean']),
                 "change_class": r['change_class_label'],
-                "confidence":   r['confidence'],
-                "delta_total":  r['delta_total_mean'],
+                "confidence":   _sanitize_float(r['confidence']),
+                "delta_total":  _sanitize_float(r['delta_total_mean']),
             })
         return {
             "zone": zone, "timeline": timeline,
@@ -803,12 +815,12 @@ def get_live_ndvi(zone: str, year: int):
             "zone":   zone,
             "year":   year,
             "source": source,
-            "results": rows,
+            "results": [{k: _sanitize_float(v) if isinstance(v, float) else v for k, v in r.items()} for r in rows],
             "summary": {
-                "mean_ndvi":      float(np.mean([r['ndvi_mean'] for r in rows])) if rows else 0,
+                "mean_ndvi":      _sanitize_float(np.mean([r['ndvi_mean'] for r in rows if r.get('ndvi_mean') is not None])) if rows else 0.0,
                 "dominant_class": rows[0]['change_class_label'] if rows else 'unknown',
-                "avg_confidence": float(np.mean([r['confidence'] for r in rows])) if rows else 0,
-                "delta_total":    float(np.mean([r['delta_total_mean'] for r in rows])) if rows else 0,
+                "avg_confidence": _sanitize_float(np.mean([r['confidence'] for r in rows if r.get('confidence') is not None])) if rows else 0.0,
+                "delta_total":    _sanitize_float(np.mean([r['delta_total_mean'] for r in rows if r.get('delta_total_mean') is not None])) if rows else 0.0,
             }
         }
     except HTTPException:
