@@ -85,6 +85,7 @@ function VerifyTab() {
           { step: 'Ledger commit',     source: 'SHA-256 immutable store', status: 'Committed' },
         ],
         shap_factors: data.shap_factors ?? [],
+        explainable_ai: data.explainable_ai ?? null,
       })
     } else {
       setVerifyError(`No ledger record for "${id}". Try a real asteroid ID from the Audit Log.`)
@@ -212,7 +213,23 @@ function VerifyTab() {
                     <div className="text-xs text-slate-400 font-bold uppercase tracking-widest mb-3">Prediction Summary</div>
                     <div className="text-lg text-white font-medium mb-1">{verifiedRecord.summary}</div>
                     <div className="text-sm text-slate-300">{verifiedRecord.prediction}</div>
-                    <div className="mt-3 text-xs font-mono text-slate-500 break-all">Record hash: {verifiedRecord.hash}</div>
+                    
+                    {verifiedRecord.explainable_ai && (
+                       <div className="mt-4 p-4 bg-[#064e3b]/30 border border-emerald-500/20 rounded-xl relative overflow-hidden group">
+                         <div className="absolute top-0 left-0 w-1 h-full bg-emerald-500" />
+                         <div className="flex gap-3 relative z-10">
+                           <div className="text-emerald-400 mt-0.5 animate-pulse">✨</div>
+                           <div>
+                             <div className="text-[10px] uppercase font-bold text-emerald-500/80 mb-0.5 tracking-wider">AI Explainability Insight</div>
+                             <div className="text-sm text-emerald-100/90 leading-relaxed font-medium">
+                               {verifiedRecord.explainable_ai}
+                             </div>
+                           </div>
+                         </div>
+                       </div>
+                    )}
+                    
+                    <div className="mt-4 text-xs font-mono text-slate-500 break-all">Record hash: {verifiedRecord.hash}</div>
                   </div>
 
                   <div>

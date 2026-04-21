@@ -10,6 +10,8 @@ from neo4j import GraphDatabase
 from sqlalchemy import create_engine
 from sqlalchemy.engine import Engine
 
+from backend.config import settings
+
 
 _engine: Optional[Engine] = None
 _neo4j_driver = None
@@ -19,11 +21,8 @@ def get_sqlalchemy_engine() -> Engine:
     """Singleton SQLAlchemy engine with bounded pool (safe under concurrent load)."""
     global _engine
     if _engine is None:
-        url = (
-            f"postgresql://{os.getenv('DB_USER')}:{os.getenv('DB_PASSWORD', '')}"
-            f"@{os.getenv('DB_HOST', 'localhost')}:{os.getenv('DB_PORT', '5432')}"
-            f"/{os.getenv('DB_NAME')}"
-        )
+        url = settings.DATABASE_URL
+
         pool_size = int(os.getenv("DB_POOL_SIZE", "5"))
         max_overflow = int(os.getenv("DB_MAX_OVERFLOW", "15"))
         _engine = create_engine(

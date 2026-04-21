@@ -398,6 +398,7 @@ class VerificationResult(BaseModel):
     improved_risk_score: float
     evidence_chain:      list
     verification_status: str
+    explainable_ai:      Optional[str] = None
 
 class BatchVerificationResult(BaseModel):
     total:       int
@@ -546,6 +547,16 @@ def verify_prediction(prediction_id: str):
                 },
             ]
 
+            explainable_ai = "AI Explanation unavailable."
+            try:
+                from langchain_core.messages import HumanMessage
+                from langchain_openai import ChatOpenAI
+                llm = ChatOpenAI(model="gpt-4o-mini", api_key=os.getenv("OPENAI_API_KEY"))
+                prompt = f"Explain in one simple, non-technical sentence why a {domain} classified as {risk} risk with a confidence score of {score:.1f}% would be flagged."
+                explainable_ai = llm.invoke([HumanMessage(content=prompt)]).content
+            except Exception as e:
+                print(f"LLM AI Explanation error: {e}")
+
             return VerificationResult(
                 prediction_id=       prediction_id,
                 asteroid_id=         prediction_id, # Reused for generic ID rendering
@@ -558,6 +569,7 @@ def verify_prediction(prediction_id: str):
                 improved_risk_score= score,
                 evidence_chain=      evidence_chain,
                 verification_status= "Verified",
+                explainable_ai=      explainable_ai,
             )
 
         row        = dict(result._mapping)
@@ -591,6 +603,16 @@ def verify_prediction(prediction_id: str):
             },
         ]
 
+        explainable_ai = "AI Explanation unavailable."
+        try:
+            from langchain_core.messages import HumanMessage
+            from langchain_openai import ChatOpenAI
+            llm = ChatOpenAI(model="gpt-4o-mini", api_key=os.getenv("OPENAI_API_KEY"))
+            prompt = f"Asteroid {row['asteroid_id']} was classified as '{row.get('risk_category', 'Unknown')}' risk. It has an anomaly score of {row.get('anomaly_score', 0):.2f} and an ML prediction risk score of {row.get('improved_risk_score', 0):.2f}. Explain briefly in one simple, non-technical sentence why this risk category was assigned."
+            explainable_ai = llm.invoke([HumanMessage(content=prompt)]).content
+        except Exception as e:
+            print(f"LLM AI Explanation error: {e}")
+
         return VerificationResult(
             prediction_id=       prediction_id,
             asteroid_id=         row['asteroid_id'],
@@ -603,6 +625,7 @@ def verify_prediction(prediction_id: str):
             improved_risk_score= float(row.get('improved_risk_score') or 0),
             evidence_chain=      evidence_chain,
             verification_status= "Verified" if valid else "MISSING_HASH",
+            explainable_ai=      explainable_ai,
         )
 
     except HTTPException:
