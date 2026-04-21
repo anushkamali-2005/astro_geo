@@ -17,13 +17,13 @@ class Settings(BaseSettings):
     NASA_API_BASE: str = "https://api.nasa.gov"
     WEATHER_API_BASE: str = "https://api.open-meteo.com/v1"
 
-    # Database settings
-    DB_HOST: str = "localhost"
+    # Database settings (Defaults mapped to Supabase for seamless remote deployment)
+    DB_HOST: str = "db.auyojdmjmgviztctbdsp.supabase.co"
     DB_PORT: str = "5432"
-    DB_NAME: str = "astrogeo_db"
-    DB_USER: str = ""
-    DB_PASSWORD: str = ""
-    DB_SCHEMA: str = "public"
+    DB_NAME: str = "postgres"
+    DB_USER: str = "postgres"
+    DB_PASSWORD: str = "*EPB8FSbV+Lr!2Z"
+    DB_SCHEMA: str = "astronomy"
 
     @property
     def DATABASE_URL(self) -> str:
