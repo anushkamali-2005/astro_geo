@@ -158,8 +158,8 @@
       },
       "targets": [
         {
-          "expr": "sum(rate(http_requests_total[1m])) by (method, path)",
-          "legendFormat": "{{method}} {{path}}",
+          "expr": "sum(rate(http_requests_total[1m])) by (handler, status)",
+          "legendFormat": "{{handler}} {{status}}",
           "refId": "A"
         }
       ],
@@ -201,12 +201,12 @@
       },
       "targets": [
         {
-          "expr": "histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket[5m])) by (le, handler)) * 1000",
-          "legendFormat": "p95 {{handler}}",
+          "expr": "sum by (handler, status) (http_requests_total)",
+          "legendFormat": "{{handler}} {{status}}",
           "refId": "A"
         }
       ],
-      "title": "P95 Latency by Handler (ms)",
+      "title": "Request Count by Handler",
       "type": "timeseries"
     },
     {
