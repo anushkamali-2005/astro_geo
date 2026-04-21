@@ -43,13 +43,21 @@ def close_langgraph_pg_pool() -> None:
 
 
 # ── Shared state ──────────────────────────────────────────────
+# Temporal keywords that indicate the user wants recent/upcoming data
+_FUTURE_KEYWORDS = {
+    'approaching', 'upcoming', 'future', 'going to', 'will there',
+    'next', 'soon', 'forecast', 'predict', 'incoming', 'imminent',
+    'expected', 'about to', 'coming', 'ahead',
+}
+
 class AstroGeoState(TypedDict):
     query:              str
     query_domain:       str
-    simplify:           bool          # ← NEW: plain English mode
+    simplify:           bool          # plain English mode
+    temporal_intent:    str           # 'recent' | 'historical' | 'any'
     asteroid_context:   Optional[dict]
     geospatial_context: Optional[dict]
-    agro_context:       Optional[dict]       # ← NEW: agro explicit context
+    agro_context:       Optional[dict]
     solar_context:      Optional[dict]
     graph_context:      Optional[list]
     final_answer:       Optional[str]
@@ -82,12 +90,23 @@ def router_node(state: AstroGeoState) -> AstroGeoState:
     if domain not in ('astronomy', 'geospatial', 'agro', 'solar', 'cross'):
         domain = 'cross'
 
-    state['query_domain'] = domain
+    # ── Detect temporal intent ─────────────────────────────────
+    query_lower = state['query'].lower()
+    if any(kw in query_lower for kw in _FUTURE_KEYWORDS):
+        temporal_intent = 'recent'   # user wants upcoming / recent events
+    elif any(kw in query_lower for kw in ('was', 'were', 'did', 'happened', 'occurred', 'last year', 'in 2024', 'in 2023')):
+        temporal_intent = 'historical'
+    else:
+        temporal_intent = 'any'
+
+    state['query_domain']    = domain
+    state['temporal_intent'] = temporal_intent
     state['evidence_chain'].append({
-        'step':   'router',
-        'domain': domain,
+        'step':            'router',
+        'domain':          domain,
+        'temporal_intent': temporal_intent,
     })
-    print(f"[Router] Domain classified as: {domain}")
+    print(f"[Router] Domain: {domain} | Temporal intent: {temporal_intent}")
     return state
 
 # ── Node 2: Astronomy Agent ───────────────────────────────────
@@ -304,50 +323,62 @@ def solar_node(state: AstroGeoState) -> AstroGeoState:
         driver = get_neo4j_driver()
         db_name = os.getenv("NEO4J_DATABASE")
 
+        from datetime import datetime, timedelta
+        today_str      = datetime.now().strftime('%Y-%m-%d')
+        cutoff_90d     = (datetime.now() - timedelta(days=90)).strftime('%Y-%m-%d')
+        temporal       = state.get('temporal_intent', 'any')
+
+        # When the user asks about upcoming/approaching storms:
+        #   → Query the most RECENT events (last 90 days), sorted date DESC
+        #   → This surfaces April 2026 events instead of the eternal May 2024 Kp9 winner
+        # When historical or any:
+        #   → Sort by risk DESC, date DESC (mixed)
+        if temporal == 'recent':
+            date_filter  = 'AND e.date >= $cutoff'
+            order_clause = 'ORDER BY e.date DESC, e.disruption_risk DESC'
+            cutoff_param = cutoff_90d
+        else:
+            date_filter  = ''
+            order_clause = 'ORDER BY e.disruption_risk DESC, e.date DESC'
+            cutoff_param = '2000-01-01'
+
         with driver.session(database=db_name) as session:
 
-            # 1. Recent high-impact solar events
-            # FIX: Secondary sort by date DESC so different events surface,
-            #      not just the same top-risk event repeated across all slots.
-            # FIX: If a specific region is mentioned, filter to events that
-            #      disrupted that region so the answer is geographically relevant.
+            # 1. High-impact solar events — temporally filtered
             if target_macro_region:
-                recent_events = session.run("""
-                    MATCH (e:SolarEvent)-[:DISRUPTS]->(r:Region {name: $region})
-                    WHERE e.disruption_risk > 0.3
+                recent_events = session.run(f"""
+                    MATCH (e:SolarEvent)-[:DISRUPTS]->(r:Region {{name: $region}})
+                    WHERE e.disruption_risk > 0.3 {date_filter}
                     RETURN e.date         AS date,
                            e.event_type   AS type,
                            e.intensity    AS intensity,
                            e.kp_index     AS kp_index,
                            e.disruption_risk AS risk,
                            e.description  AS description
-                    ORDER BY e.disruption_risk DESC, e.date DESC
+                    {order_clause}
                     LIMIT 5
-                """, {'region': target_macro_region}).data()
+                """, {'region': target_macro_region, 'cutoff': cutoff_param}).data()
             else:
-                recent_events = session.run("""
+                recent_events = session.run(f"""
                     MATCH (e:SolarEvent)
-                    WHERE e.disruption_risk > 0.3
+                    WHERE e.disruption_risk > 0.3 {date_filter}
                     RETURN e.date         AS date,
                            e.event_type   AS type,
                            e.intensity    AS intensity,
                            e.kp_index     AS kp_index,
                            e.disruption_risk AS risk,
                            e.description  AS description
-                    ORDER BY e.disruption_risk DESC, e.date DESC
+                    {order_clause}
                     LIMIT 5
-                """).data()
+                """, {'cutoff': cutoff_param}).data()
 
-            # 2. Cross-domain: solar event → region (variable depth) → zone → land cover change
-            # FIX: Use variable-length PART_OF path (1-2 hops) so Karnataka zones
-            #      match whether they sit directly under a macro region or under
-            #      a state-level region that sits under the macro region.
+            # 2. Cross-domain: solar event → region (1-2 hop PART_OF) → zone → land change
             if target_macro_region:
-                cross_domain = session.run("""
-                    MATCH (e:SolarEvent)-[:DISRUPTS]->(mr:Region {name: $region})
+                cross_domain = session.run(f"""
+                    MATCH (e:SolarEvent)-[:DISRUPTS]->(mr:Region {{name: $region}})
                     MATCH (z:Zone)-[:PART_OF*1..2]->(mr)
                     MATCH (z)-[:SHOWS_CHANGE]->(c:LandCoverChange)
-                    WHERE e.disruption_risk > 0.4
+                    WHERE e.disruption_risk > 0.4 {date_filter}
                     OPTIONAL MATCH (z)-[:PART_OF]->(sr:Region)
                     WHERE sr.level = 'state'
                     RETURN DISTINCT
@@ -359,15 +390,15 @@ def solar_node(state: AstroGeoState) -> AstroGeoState:
                            z.name           AS zone,
                            c.type           AS land_change,
                            c.confidence     AS confidence
-                    ORDER BY e.disruption_risk DESC, e.date DESC, c.confidence DESC
+                    {order_clause}, c.confidence DESC
                     LIMIT 8
-                """, {'region': target_macro_region}).data()
+                """, {'region': target_macro_region, 'cutoff': cutoff_param}).data()
             else:
-                cross_domain = session.run("""
+                cross_domain = session.run(f"""
                     MATCH (e:SolarEvent)-[:DISRUPTS]->(mr:Region)
                     MATCH (z:Zone)-[:PART_OF*1..2]->(mr)
                     MATCH (z)-[:SHOWS_CHANGE]->(c:LandCoverChange)
-                    WHERE e.disruption_risk > 0.4
+                    WHERE e.disruption_risk > 0.4 {date_filter}
                     OPTIONAL MATCH (z)-[:PART_OF]->(sr:Region)
                     WHERE sr.level = 'state'
                     RETURN DISTINCT
@@ -379,36 +410,41 @@ def solar_node(state: AstroGeoState) -> AstroGeoState:
                            z.name           AS zone,
                            c.type           AS land_change,
                            c.confidence     AS confidence
-                    ORDER BY e.disruption_risk DESC, e.date DESC, c.confidence DESC
+                    {order_clause}, c.confidence DESC
                     LIMIT 8
-                """).data()
+                """, {'cutoff': cutoff_param}).data()
 
-            # 3. Storm frequency per region — which regions hit most
+            # 3. Storm frequency per region (always all-time)
             region_exposure = session.run("""
                 MATCH (e:SolarEvent)-[d:DISRUPTS]->(r:Region)
                 WHERE e.disruption_risk > 0.3
-                RETURN r.name          AS region,
-                       count(e)        AS storm_count,
+                RETURN r.name            AS region,
+                       count(e)          AS storm_count,
                        avg(d.risk_score) AS avg_risk
                 ORDER BY storm_count DESC
             """).data()
 
         state['solar_context'] = {
             'region_filter':           target_macro_region or 'All India',
+            'temporal_intent':         temporal,
+            'data_window':             'last 90 days' if temporal == 'recent' else 'all-time highest risk',
+            'data_as_of':              today_str,
             'recent_high_risk_events': recent_events,
             'cross_domain_impacts':    cross_domain,
             'most_exposed_regions':    region_exposure[:3],
             'total_events_found':      len(recent_events),
         }
         state['evidence_chain'].append({
-            'step':          'solar_agent',
-            'source':        'Neo4j — SolarEvent nodes (NASA DONKI)',
-            'region_filter': target_macro_region or 'All India',
-            'events_found':  len(recent_events),
-            'cross_impacts': len(cross_domain),
+            'step':            'solar_agent',
+            'source':          'Neo4j — SolarEvent nodes (NASA DONKI)',
+            'region_filter':   target_macro_region or 'All India',
+            'temporal_intent': temporal,
+            'data_window':     'last 90 days' if temporal == 'recent' else 'all-time highest risk',
+            'events_found':    len(recent_events),
+            'cross_impacts':   len(cross_domain),
         })
-        print(f"[Solar] {len(recent_events)} high-risk events, "
-              f"{len(cross_domain)} cross-domain impacts found")
+        print(f"[Solar] temporal={temporal} | {len(recent_events)} events | "
+              f"{len(cross_domain)} cross-domain impacts")
 
     except Exception as e:
         print(f"[Solar] Neo4j error: {e}")
@@ -539,18 +575,51 @@ Write in 2-3 sentences maximum.
 End with a one-sentence action recommendation if relevant.
 """
     else:
-        system_prompt = """
-You are AstroGeo, a scientific AI assistant specialising in
-astronomy, space weather, and Earth observation over India.
+        # Check if the user asked about future/approaching events
+        solar_ctx = state.get('solar_context') or {}
+        temporal  = solar_ctx.get('temporal_intent') or state.get('temporal_intent', 'any')
+        data_window = solar_ctx.get('data_window', 'all-time highest risk')
+        data_as_of  = solar_ctx.get('data_as_of', 'unknown')
 
+        if temporal == 'recent':
+            temporal_instruction = f"""
+IMPORTANT — TEMPORAL FRAMING:
+The user is asking about UPCOMING or APPROACHING solar events.
+AstroGeo does NOT have a real-time prediction API. Instead, these results
+represent the MOST RECENT events in our database (window: {data_window},
+as of: {data_as_of}) from NASA DONKI live-seeded data.
+
+Frame your answer correctly:
+- Say "Based on the most recent solar activity in our database (as of {data_as_of})…"
+- Do NOT say an old event is "approaching" — cite its actual date.
+- If the most recent events are moderate (M-class), say that; do not escalate to 'X-class danger'.
+- End with: "AstroGeo's dataset is updated from NASA DONKI. For real-time space weather
+  forecasts, also check NOAA Space Weather Prediction Center (swpc.noaa.gov)."
+"""
+        elif temporal == 'historical':
+            temporal_instruction = """
+IMPORTANT — TEMPORAL FRAMING:
+The user is asking about PAST events. Cite exact dates clearly.
+"""
+        else:
+            temporal_instruction = ""
+
+        system_prompt = f"""You are AstroGeo, a scientific AI assistant specialising in
+astronomy, space weather, and Earth observation over India.
+{temporal_instruction}
 Answer the following query using ONLY the provided evidence.
-Be precise, cite specific values, and acknowledge uncertainty.
+Be precise, cite specific values (dates, Kp index, intensity class, disruption risk score),
+and acknowledge what you do and don't know.
 
 When solar/geomagnetic data is present, explain the causal chain:
 Solar Event → GPS Degradation → Smart Irrigation Disruption
 → Agricultural Impact in vulnerable zones.
 
-Provide a concise scientific answer with specific numbers where available.
+Provide a structured answer:
+1. What recent/relevant solar events exist in the data
+2. What risk they pose to the specified region
+3. What agricultural implications follow
+4. Any caveats about data currency or prediction limits
 """
 
     prompt = f"""{system_prompt}
@@ -633,7 +702,12 @@ def _get_compiled_graph():
 
 # ── Public API ────────────────────────────────────────────────
 def run_query(query: str, simplify: bool = False) -> dict:
-    initial_state = {"query": query, "evidence_chain": [], "simplify": simplify}
+    initial_state = {
+        "query":           query,
+        "evidence_chain":  [],
+        "simplify":        simplify,
+        "temporal_intent": "",   # router_node will set 'recent' | 'historical' | 'any'
+    }
     return _get_compiled_graph().invoke(initial_state)
 
 # ── Test ──────────────────────────────────────────────────────
