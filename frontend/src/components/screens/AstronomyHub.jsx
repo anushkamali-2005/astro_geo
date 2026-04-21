@@ -284,7 +284,6 @@ function AsteroidsTab() {
           </div>
         </GlassPanel>
       </div>
-      </div>
     </motion.div>
   )
 }
