@@ -20,7 +20,7 @@ def get_donki_data():
     if not os.path.exists(csv_path):
         return {
             "live_status": None,
-            "recent_10": [],
+            "recent_feed": [],
             "timeline": [],
             "isro_impacts": []
         }
