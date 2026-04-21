@@ -27,7 +27,10 @@ class Settings(BaseSettings):
 
     @property
     def DATABASE_URL(self) -> str:
-        return f"postgresql://{self.DB_USER}:{self.DB_PASSWORD}@{self.DB_HOST}:{self.DB_PORT}/{self.DB_NAME}"
+        import urllib.parse
+        encoded_pw = urllib.parse.quote_plus(self.DB_PASSWORD)
+        # Force sslmode=require for remote endpoints like Supabase when connecting from Render
+        return f"postgresql://{self.DB_USER}:{encoded_pw}@{self.DB_HOST}:{self.DB_PORT}/{self.DB_NAME}?sslmode=require"
     
     model_config = {
         "env_file": os.path.join(os.path.dirname(__file__), ".env"),
