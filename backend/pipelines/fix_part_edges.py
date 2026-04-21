@@ -54,68 +54,81 @@ def fix_part_of_edges():
     )
 
     with driver.session() as session:
+        # First — Ensure Country node exists
+        session.run("MERGE (c:Country {name: 'India'}) SET c.type='Country'")
 
-        # First — see what Zone nodes actually exist
-        print("Checking existing Zone nodes...")
-        zones = session.run("""
-            MATCH (z:Zone)
-            RETURN z.name AS name
-            LIMIT 30
-        """).data()
+        # 1. Connect Macro-Regions to Country
+        print("Connecting Macro-Regions to India Country node...")
+        macros = ['North India', 'South India', 'West India', 'East India', 'Central India', 'Northeast India']
+        for m in macros:
+            session.run("""
+                MERGE (mr:Region {name: $name})
+                SET mr.level = 'macro'
+                WITH mr
+                MATCH (c:Country {name: 'India'})
+                MERGE (mr)-[:PART_OF]->(c)
+            """, {'name': m})
 
-        print(f"Found {len(zones)} Zone nodes:")
-        for z in zones:
-            print(f"  → {z['name']}")
+        # 2. Connect Zones to State Regions (using keywords)
+        print("\nCreating PART_OF edges (Zone -> State)...")
+        # We'll use a simpler mapping for state-level regions
+        STATE_MAPPING = {
+            'Maharashtra': ['vidarbha', 'marathwada', 'pune', 'mumbai'],
+            'Rajasthan': ['rajasthan'],
+            'Punjab': ['punjab', 'haryana', 'delhi'],
+            'Tamil Nadu': ['tamil_nadu', 'chennai'],
+            'Karnataka': ['karnataka', 'bangalore'],
+            'Andhra Pradesh': ['andhra', 'telangana', 'coast', 'sriharikota'],
+            'West Bengal': ['west_bengal', 'sikkim', 'kolkata'],
+        }
 
-        # Create PART_OF edges based on keyword matching
-        print("\nCreating PART_OF edges...")
-        total_created = 0
-
-        for region_name, keywords in REGION_ZONE_KEYWORDS.items():
-            for keyword in keywords:
-                result = session.run("""
+        for state, keywords in STATE_MAPPING.items():
+            for kw in keywords:
+                session.run("""
                     MATCH (z:Zone)
-                    WHERE z.name CONTAINS $keyword
-                       OR z.state CONTAINS $keyword
-                       OR z.zone_name CONTAINS $keyword
-                    MATCH (r:Region {name: $region_name})
-                    MERGE (z)-[:PART_OF]->(r)
-                    RETURN count(*) AS created
-                """, {
-                    'keyword':     keyword,
-                    'region_name': region_name,
-                }).single()
+                    WHERE z.name CONTAINS $kw
+                    MERGE (s:Region {name: $state})
+                    SET s.level = 'state'
+                    MERGE (z)-[:PART_OF]->(s)
+                """, {'kw': kw, 'state': state})
 
-                if result and result['created'] > 0:
-                    print(f"  ✅ {keyword} → {region_name} "
-                          f"({result['created']} edges)")
-                    total_created += result['created']
+        # 3. Connect State Regions to Macro Regions
+        print("\nConnecting State Regions to Macro Regions...")
+        STATE_TO_MACRO = {
+            'Maharashtra': 'West India', 'Rajasthan': 'West India', 'Gujarat': 'West India',
+            'Punjab': 'North India', 'Haryana': 'North India',
+            'Tamil Nadu': 'South India', 'Karnataka': 'South India', 'Andhra Pradesh': 'South India',
+            'West Bengal': 'East India', 'Orissa': 'East India',
+        }
+        for state, macro in STATE_TO_MACRO.items():
+            session.run("""
+                MATCH (s:Region {name: $state, level: 'state'})
+                MATCH (m:Region {name: $macro, level: 'macro'})
+                MERGE (s)-[:PART_OF]->(m)
+            """, {'state': state, 'macro': macro})
 
-        print(f"\nTotal PART_OF edges created: {total_created}")
-
-        # Verify the full cross-domain path now works
-        print("\nTesting cross-domain path...")
+        # Verify the full nationwide cross-domain path
+        print("\nTesting Nationwide cross-domain path...")
         test = session.run("""
-            MATCH (e:SolarEvent)-[:DISRUPTS]->(r:Region)
-                  <-[:PART_OF]-(z:Zone)
+            MATCH (e:SolarEvent)-[:DISRUPTS]->(mr:Region)
+                  <-[:PART_OF]-(sr:Region)<-[:PART_OF]-(z:Zone)
                   -[:SHOWS_CHANGE]->(c:LandCoverChange)
-            WHERE e.disruption_risk > 0.4
-            RETURN e.date       AS event_date,
-                   e.intensity  AS intensity,
-                   r.name       AS region,
+            RETURN e.date       AS date,
+                   mr.name      AS macro,
+                   sr.name      AS state,
                    z.name       AS zone,
-                   c.type       AS land_change
+                   c.type       AS change
             LIMIT 3
         """).data()
 
         if test:
-            print(f"✅ Cross-domain path working! {len(test)} results:")
+            print(f"✅ Nationwide path working! {len(test)} results:")
             for row in test:
-                print(f"   {row['event_date']} | {row['intensity']} | "
-                      f"{row['region']} | {row['zone']} | {row['land_change']}")
+                print(f"   {row['date']} | {row['macro']} | {row['state']} | {row['zone']} | {row['change']}")
         else:
-            print("⚠️  Still no results — check zone names above and")
-            print("   adjust REGION_ZONE_KEYWORDS to match your actual zone names")
+            print("⚠️ Path incomplete. Run 09_graphrag_seed.py first to seed all states.")
+
+    driver.close()
 
     driver.close()
 

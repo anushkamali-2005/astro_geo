@@ -6,12 +6,17 @@ from neo4j import GraphDatabase
 import psycopg2
 import pandas as pd
 import os
+from dotenv import load_dotenv
+
+# Explicitly load backend/.env since we run from project root
+dotenv_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), '.env')
+load_dotenv(dotenv_path)
 
 # ── Connect to Neo4j ─────────────────────────────────────────
 driver = GraphDatabase.driver(
     os.getenv('NEO4J_URI'),
     auth=(
-        os.getenv('NEO4J_USER', 'neo4j'),
+        os.getenv('NEO4J_USERNAME', os.getenv('NEO4J_USER', 'neo4j')),
         os.getenv('NEO4J_PASSWORD')
     )
 )
@@ -20,6 +25,9 @@ driver = GraphDatabase.driver(
 conn = psycopg2.connect(
     dbname=os.getenv('DB_NAME', 'astrogeo'),
     user=os.getenv('DB_USER'),
+    password=os.getenv('DB_PASSWORD'),
+    host=os.getenv('DB_HOST'),
+    port=os.getenv('DB_PORT', '5432')
 )
 
 
@@ -28,7 +36,9 @@ def create_constraints(session):
     session.run("CREATE CONSTRAINT IF NOT EXISTS "
                 "FOR (z:Zone) REQUIRE z.name IS UNIQUE")
     session.run("CREATE CONSTRAINT IF NOT EXISTS "
-                "FOR (l:Location) REQUIRE l.region IS UNIQUE")
+                "FOR (r:Region) REQUIRE r.name IS UNIQUE")
+    session.run("CREATE CONSTRAINT IF NOT EXISTS "
+                "FOR (l:Country) REQUIRE l.name IS UNIQUE")
     session.run("CREATE CONSTRAINT IF NOT EXISTS "
                 "FOR (a:Asteroid) REQUIRE a.designation IS UNIQUE")
     session.run("CREATE CONSTRAINT IF NOT EXISTS "
@@ -36,56 +46,76 @@ def create_constraints(session):
     print("Constraints created.")
 
 
-def seed_location_nodes(session):
+def seed_geographic_hierarchy(session):
     """
-    Create Location nodes — the shared anchor
-    that connects all three agents.
+    Create Country, Macro-Region, and State-level Region nodes.
+    Establishes: Country <- Macro-Region <- State-level Region <- Zone.
     """
-    locations = [
-        # Major regions that appear in both geospatial
-        # and asteroid approach data
-        {"region": "Maharashtra",    "country": "India",
-         "lat": 19.7, "lon": 75.7},
-        {"region": "Rajasthan",      "country": "India",
-         "lat": 27.0, "lon": 74.2},
-        {"region": "Andhra Pradesh", "country": "India",
-         "lat": 15.9, "lon": 79.7},
-        {"region": "Punjab",         "country": "India",
-         "lat": 31.1, "lon": 75.3},
-        {"region": "Tamil Nadu",     "country": "India",
-         "lat": 11.1, "lon": 78.7},
-        {"region": "West Bengal",    "country": "India",
-         "lat": 22.9, "lon": 87.8},
-        {"region": "Karnataka",      "country": "India",
-         "lat": 15.3, "lon": 75.7},
-        {"region": "Gujarat",        "country": "India",
-         "lat": 22.3, "lon": 72.6},
-        # ISRO launch site — critical for ISRO agent link
-        {"region": "Sriharikota",    "country": "India",
-         "lat": 13.7, "lon": 80.2,
-         "is_launch_site": True},
-        {"region": "Indian Ocean",   "country": None,
-         "lat": 10.0, "lon": 75.0},
-        {"region": "India",          "country": "India",
-         "lat": 20.6, "lon": 78.9},
-    ]
+    # 1. Create Country node
+    session.run("""
+        MERGE (c:Country {name: 'India'})
+        SET c.latitude = 20.6,
+            c.longitude = 78.9,
+            c.type = 'Country'
+    """)
 
-    for loc in locations:
+    # 2. Create Macro-Region nodes
+    macros = ['North India', 'South India', 'West India', 'East India', 'Central India', 'Northeast India']
+    for m in macros:
         session.run("""
-            MERGE (l:Location {region: $region})
-            SET l.country = $country,
-                l.latitude = $lat,
-                l.longitude = $lon,
-                l.is_launch_site = $is_launch_site
-        """, {
-            'region':         loc['region'],
-            'country':        loc.get('country'),
-            'lat':            loc['lat'],
-            'lon':            loc['lon'],
-            'is_launch_site': loc.get('is_launch_site', False),
-        })
+            MERGE (mr:Region {name: $name})
+            SET mr.level = 'macro'
+            WITH mr
+            MATCH (c:Country {name: 'India'})
+            MERGE (mr)-[:PART_OF]->(c)
+        """, {'name': m})
 
-    print(f"Created {len(locations)} Location nodes.")
+    # 3. Extract State/Regions from ndvi_results and connect to Macro
+    df = pd.read_sql("SELECT DISTINCT zone_name FROM ndvi_results", conn)
+    
+    # Mapping state to macro
+    state_to_macro = {
+        'Maharashtra': 'West India', 'Gujarat': 'West India', 'Rajasthan': 'West India',
+        'Punjab': 'North India', 'Haryana': 'North India', 'Kashmir': 'North India',
+        'Tamil Nadu': 'South India', 'Karnataka': 'South India', 'Kerala': 'South India',
+        'Andhra Pradesh': 'South India', 'Telangana': 'South India',
+        'West Bengal': 'East India', 'Bihar': 'East India', 'Odisha': 'East India',
+        'Madhya Pradesh': 'Central India', 'Chhattisgarh': 'Central India',
+        'Northeast India': 'Northeast India', 'Assam': 'Northeast India'
+    }
+
+    for _, row in df.iterrows():
+        zone_raw = row['zone_name']
+        region_name = zone_raw.split('_')[0].capitalize()
+        
+        # Normalization
+        if region_name == 'Andhra': region_name = 'Andhra Pradesh'
+        if region_name == 'Tamil': region_name = 'Tamil Nadu'
+        if region_name == 'West': region_name = 'West Bengal'
+        if region_name == 'Northeast': region_name = 'Northeast India'
+        if region_name == 'Madhya': region_name = 'Madhya Pradesh'
+        if region_name == 'Uttar': region_name = 'Uttar Pradesh'
+        if region_name == 'Himachal': region_name = 'Himachal Pradesh'
+        
+        macro = state_to_macro.get(region_name, 'North India') # Fallback
+
+        session.run("""
+            MERGE (r:Region {name: $region_name})
+            SET r.level = 'state'
+            WITH r
+            MATCH (mr:Region {name: $macro})
+            MERGE (r)-[:PART_OF]->(mr)
+        """, {'region_name': region_name, 'macro': macro})
+
+    # 4. Handle Indian Ocean for Anomalies
+    session.run("""
+        MERGE (c:Country {name: 'Indian Ocean'})
+        SET c.type = 'Water Body',
+            c.latitude = 10.0,
+            c.longitude = 75.0
+    """)
+
+    print(f"Standardized hierarchy (Country <- Macro <- State) created.")
 
 
 def seed_zone_nodes(session):
@@ -201,30 +231,31 @@ def seed_change_edges(session):
 
 def seed_zone_location_edges(session):
     """
-    Connect Zone nodes to Location nodes.
-    This is what enables cross-domain queries.
+    Connect Zone nodes to Region nodes.
+    This enables the hop: Zone -> Region -> Country.
     """
-    zone_to_location = {
-        'maharashtra_marathwada':   'Maharashtra',
-        'maharashtra_vidarbha':     'Maharashtra',
-        'rajasthan':                'Rajasthan',
-        'andhra_telangana_coast':   'Andhra Pradesh',
-        'punjab_haryana_delhi':     'Punjab',
-        'tamil_nadu_puducherry':    'Tamil Nadu',
-        'west_bengal_sikkim':       'West Bengal',
-        'karnataka_goa':            'Karnataka',
-        'gujarat_dadra_dd':         'Gujarat',
-        'andhra_telangana_coast':   'Sriharikota',
-    }
+    df = pd.read_sql("SELECT DISTINCT zone_name FROM ndvi_results", conn)
+    
+    for _, row in df.iterrows():
+        zone_raw = row['zone_name']
+        region_name = zone_raw.split('_')[0].capitalize()
+        
+        # Normalization (must match seed_geographic_hierarchy)
+        if region_name == 'Andhra': region_name = 'Andhra Pradesh'
+        if region_name == 'Tamil': region_name = 'Tamil Nadu'
+        if region_name == 'West': region_name = 'West Bengal'
+        if region_name == 'Northeast': region_name = 'Northeast India'
+        if region_name == 'Madhya': region_name = 'Madhya Pradesh'
+        if region_name == 'Uttar': region_name = 'Uttar Pradesh'
+        if region_name == 'Himachal': region_name = 'Himachal Pradesh'
 
-    for zone, location in zone_to_location.items():
         session.run("""
             MATCH (z:Zone {name: $zone})
-            MATCH (l:Location {region: $location})
-            MERGE (z)-[:LOCATED_IN]->(l)
-        """, {'zone': zone, 'location': location})
+            MATCH (r:Region {name: $region})
+            MERGE (z)-[:PART_OF]->(r)
+        """, {'zone': zone_raw, 'region': region_name})
 
-    print(f"Created LOCATED_IN edges for {len(zone_to_location)} zones.")
+    print(f"Created Hierarchy: Zone -> Region PART_OF edges for {len(df)} zones.")
 
 
 def seed_asteroid_nodes(session):
@@ -280,47 +311,28 @@ def seed_asteroid_nodes(session):
 
 def create_cross_agent_edges(session):
     """
-    THE KEY STEP — connect asteroids to locations.
-    This is the first real multi-hop GraphRAG connection
-    between the Astronomy Agent and Geospatial Agent.
-
-    High-risk asteroids that approach Earth are connected
-    to Indian Ocean / India location nodes.
-    These same location nodes connect to Zone nodes
-    which connect to NDVIObservation nodes.
-
-    This enables the query:
-    "Were any anomalous asteroids approaching during
-     periods of vegetation stress in Maharashtra?"
+    Connect high-risk asteroids to India Country node.
+    This is the first real multi-hop GraphRAG connection.
     """
-    # Connect high-risk asteroids to India region
+    # Connect high-risk asteroids to India Country
     session.run("""
         MATCH (a:Asteroid)
-        WHERE a.risk_category = 'High'
-        MATCH (l:Location {region: 'India'})
+        WHERE a.risk_category = 'High' OR a.adaptive_category = 'High'
+        MATCH (c:Country {name: 'India'})
         MERGE (a)-[:APPROACH_RISK {
-            note: 'Planetary close approach — India region'
-        }]->(l)
+            note: 'Planetary close approach — India (National)'
+        }]->(c)
     """)
 
     # Connect anomalous asteroids to Indian Ocean
-    # (relevant for ISRO tracking)
     session.run("""
         MATCH (a:Asteroid)
         WHERE a.is_anomaly = true
-        MATCH (l:Location {region: 'Indian Ocean'})
-        MERGE (a)-[:ANOMALOUS_PASS_NEAR]->(l)
+        MATCH (c:Country {name: 'Indian Ocean'})
+        MERGE (a)-[:ANOMALOUS_PASS_NEAR]->(c)
     """)
 
-    # Connect Sriharikota launch site to
-    # nearby Andhra/Telangana zone
-    session.run("""
-        MATCH (l:Location {region: 'Sriharikota'})
-        MATCH (z:Zone {name: 'andhra_telangana_coast'})
-        MERGE (l)-[:WITHIN_ZONE]->(z)
-    """)
-
-    print("Cross-agent edges created — Astronomy ↔ Geospatial connected.")
+    print("Cross-agent edges created — Astronomy ↔ Country connected.")
 
 
 def verify_graph(session):
@@ -331,44 +343,36 @@ def verify_graph(session):
         ORDER BY count DESC
     """).data()
 
-    edges = session.run("""
-        MATCH ()-[r]->()
-        RETURN type(r) AS rel_type, count(r) AS count
-        ORDER BY count DESC
-    """).data()
-
     print("\n" + "=" * 50)
     print("GRAPH SUMMARY")
     print("=" * 50)
     print("Nodes:")
     for row in counts:
         print(f"  {row['label']:<25}: {row['count']}")
-    print("\nEdges:")
-    for row in edges:
-        print(f"  {row['rel_type']:<30}: {row['count']}")
 
-    # Test the key cross-domain query
+    # Test the key cross-domain query with the new hierarchy:
+    # Asteroid -> Country -> Region -> Zone -> LandCoverChange
     result = session.run("""
-        MATCH (a:Asteroid)-[:APPROACH_RISK]->(l:Location)
-              <-[:LOCATED_IN]-(z:Zone)
-              -[:SHOWS_CHANGE]->(c:LandCoverChange)
-        WHERE c.type = 'vegetation_loss'
+        MATCH (a:Asteroid)-[:APPROACH_RISK]->(c:Country {name: 'India'})
+              <-[:PART_OF]-(r:Region)<-[:PART_OF]-(z:Zone)
+              -[:SHOWS_CHANGE]->(lcc:LandCoverChange)
+        WHERE lcc.type = 'vegetation_loss'
         RETURN a.designation AS asteroid,
-               l.region      AS location,
+               r.name        AS state,
                z.name        AS zone,
-               c.confidence  AS confidence
+               lcc.confidence AS confidence
         LIMIT 5
     """).data()
 
-    print("\nFirst cross-domain query result:")
-    print("(High-risk asteroids → India → zones with vegetation loss)")
+    print("\nNationwide Cross-domain query result:")
+    print("(High-risk Asteroids → India (National) → States → Zones)")
     if result:
         for row in result:
-            print(f"  {row['asteroid']} → {row['location']}"
+            print(f"  {row['asteroid']} → India → {row['state']}"
                   f" → {row['zone']} "
                   f"(confidence: {row['confidence']:.2f})")
     else:
-        print("  No results yet — add more data to see connections")
+        print("  No multi-hop results yet. Ensure hierarchy is correct.")
 
     print("=" * 50)
 
@@ -379,7 +383,7 @@ if __name__ == '__main__':
 
     with driver.session() as session:
         create_constraints(session)
-        seed_location_nodes(session)
+        seed_geographic_hierarchy(session)
         seed_zone_nodes(session)
         seed_change_edges(session)
         seed_zone_location_edges(session)

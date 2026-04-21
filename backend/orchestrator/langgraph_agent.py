@@ -250,6 +250,35 @@ def agro_node(state: AstroGeoState) -> AstroGeoState:
     return state
 
 # ── Node 4: Solar Flare Agent ─────────────────────────────────
+# Regions mentioned in queries → Neo4j macro-region names
+_REGION_MENTIONS = {
+    'karnataka':        'South India',
+    'bangalore':        'South India',
+    'tamil nadu':       'South India',
+    'kerala':           'South India',
+    'andhra':           'South India',
+    'telangana':        'South India',
+    'south india':      'South India',
+    'maharashtra':      'West India',
+    'gujarat':          'West India',
+    'rajasthan':        'West India',
+    'west india':       'West India',
+    'punjab':           'North India',
+    'haryana':          'North India',
+    'uttar pradesh':    'North India',
+    'delhi':            'North India',
+    'north india':      'North India',
+    'west bengal':      'East India',
+    'odisha':           'East India',
+    'east india':       'East India',
+    'madhya pradesh':   'Central India',
+    'chhattisgarh':     'Central India',
+    'central india':    'Central India',
+    'assam':            'Northeast India',
+    'northeast':        'Northeast India',
+}
+
+
 def solar_node(state: AstroGeoState) -> AstroGeoState:
     """
     Queries Neo4j for solar events and their disruption risk
@@ -262,6 +291,15 @@ def solar_node(state: AstroGeoState) -> AstroGeoState:
         print("[Solar] Skipped — not relevant domain")
         return state
 
+    # ── Detect if the query targets a specific region ──────────
+    query_lower = state['query'].lower()
+    target_macro_region = None
+    for keyword, macro in _REGION_MENTIONS.items():
+        if keyword in query_lower:
+            target_macro_region = macro
+            break
+    print(f"[Solar] Region filter: {target_macro_region or 'all India'}")
+
     try:
         driver = get_neo4j_driver()
         db_name = os.getenv("NEO4J_DATABASE")
@@ -269,36 +307,81 @@ def solar_node(state: AstroGeoState) -> AstroGeoState:
         with driver.session(database=db_name) as session:
 
             # 1. Recent high-impact solar events
-            recent_events = session.run("""
-                MATCH (e:SolarEvent)
-                WHERE e.disruption_risk > 0.3
-                RETURN e.date         AS date,
-                       e.event_type   AS type,
-                       e.intensity    AS intensity,
-                       e.kp_index     AS kp_index,
-                       e.disruption_risk AS risk,
-                       e.description  AS description
-                ORDER BY e.disruption_risk DESC
-                LIMIT 5
-            """).data()
+            # FIX: Secondary sort by date DESC so different events surface,
+            #      not just the same top-risk event repeated across all slots.
+            # FIX: If a specific region is mentioned, filter to events that
+            #      disrupted that region so the answer is geographically relevant.
+            if target_macro_region:
+                recent_events = session.run("""
+                    MATCH (e:SolarEvent)-[:DISRUPTS]->(r:Region {name: $region})
+                    WHERE e.disruption_risk > 0.3
+                    RETURN e.date         AS date,
+                           e.event_type   AS type,
+                           e.intensity    AS intensity,
+                           e.kp_index     AS kp_index,
+                           e.disruption_risk AS risk,
+                           e.description  AS description
+                    ORDER BY e.disruption_risk DESC, e.date DESC
+                    LIMIT 5
+                """, {'region': target_macro_region}).data()
+            else:
+                recent_events = session.run("""
+                    MATCH (e:SolarEvent)
+                    WHERE e.disruption_risk > 0.3
+                    RETURN e.date         AS date,
+                           e.event_type   AS type,
+                           e.intensity    AS intensity,
+                           e.kp_index     AS kp_index,
+                           e.disruption_risk AS risk,
+                           e.description  AS description
+                    ORDER BY e.disruption_risk DESC, e.date DESC
+                    LIMIT 5
+                """).data()
 
-            # 2. Cross-domain: solar event → disrupted region
-            #    → vulnerable zone → land cover change
-            cross_domain = session.run("""
-                MATCH (e:SolarEvent)-[:DISRUPTS]->(r:Region)
-                      <-[:PART_OF]-(z:Zone)
-                      -[:SHOWS_CHANGE]->(c:LandCoverChange)
-                WHERE e.disruption_risk > 0.4
-                RETURN e.date           AS event_date,
-                       e.intensity      AS intensity,
-                       e.disruption_risk AS risk,
-                       r.name           AS region,
-                       z.name           AS zone,
-                       c.type           AS land_change,
-                       c.confidence     AS confidence
-                ORDER BY e.disruption_risk DESC, c.confidence DESC
-                LIMIT 5
-            """).data()
+            # 2. Cross-domain: solar event → region (variable depth) → zone → land cover change
+            # FIX: Use variable-length PART_OF path (1-2 hops) so Karnataka zones
+            #      match whether they sit directly under a macro region or under
+            #      a state-level region that sits under the macro region.
+            if target_macro_region:
+                cross_domain = session.run("""
+                    MATCH (e:SolarEvent)-[:DISRUPTS]->(mr:Region {name: $region})
+                    MATCH (z:Zone)-[:PART_OF*1..2]->(mr)
+                    MATCH (z)-[:SHOWS_CHANGE]->(c:LandCoverChange)
+                    WHERE e.disruption_risk > 0.4
+                    OPTIONAL MATCH (z)-[:PART_OF]->(sr:Region)
+                    WHERE sr.level = 'state'
+                    RETURN DISTINCT
+                           e.date           AS event_date,
+                           e.intensity      AS intensity,
+                           e.disruption_risk AS risk,
+                           mr.name          AS macro_region,
+                           coalesce(sr.name, mr.name) AS state,
+                           z.name           AS zone,
+                           c.type           AS land_change,
+                           c.confidence     AS confidence
+                    ORDER BY e.disruption_risk DESC, e.date DESC, c.confidence DESC
+                    LIMIT 8
+                """, {'region': target_macro_region}).data()
+            else:
+                cross_domain = session.run("""
+                    MATCH (e:SolarEvent)-[:DISRUPTS]->(mr:Region)
+                    MATCH (z:Zone)-[:PART_OF*1..2]->(mr)
+                    MATCH (z)-[:SHOWS_CHANGE]->(c:LandCoverChange)
+                    WHERE e.disruption_risk > 0.4
+                    OPTIONAL MATCH (z)-[:PART_OF]->(sr:Region)
+                    WHERE sr.level = 'state'
+                    RETURN DISTINCT
+                           e.date           AS event_date,
+                           e.intensity      AS intensity,
+                           e.disruption_risk AS risk,
+                           mr.name          AS macro_region,
+                           coalesce(sr.name, mr.name) AS state,
+                           z.name           AS zone,
+                           c.type           AS land_change,
+                           c.confidence     AS confidence
+                    ORDER BY e.disruption_risk DESC, e.date DESC, c.confidence DESC
+                    LIMIT 8
+                """).data()
 
             # 3. Storm frequency per region — which regions hit most
             region_exposure = session.run("""
@@ -311,6 +394,7 @@ def solar_node(state: AstroGeoState) -> AstroGeoState:
             """).data()
 
         state['solar_context'] = {
+            'region_filter':           target_macro_region or 'All India',
             'recent_high_risk_events': recent_events,
             'cross_domain_impacts':    cross_domain,
             'most_exposed_regions':    region_exposure[:3],
@@ -319,6 +403,7 @@ def solar_node(state: AstroGeoState) -> AstroGeoState:
         state['evidence_chain'].append({
             'step':          'solar_agent',
             'source':        'Neo4j — SolarEvent nodes (NASA DONKI)',
+            'region_filter': target_macro_region or 'All India',
             'events_found':  len(recent_events),
             'cross_impacts': len(cross_domain),
         })
@@ -342,12 +427,13 @@ def graphrag_node(state: AstroGeoState) -> AstroGeoState:
                 # Solar-specific multi-hop already handled in solar_node
                 # GraphRAG adds the agriculture connection on top
                 results = session.run("""
-                    MATCH (e:SolarEvent)-[:DISRUPTS]->(r:Region)
-                          <-[:PART_OF]-(z:Zone)
+                    MATCH (e:SolarEvent)-[:DISRUPTS]->(mr:Region)
+                          <-[:PART_OF]-(sr:Region)<-[:PART_OF]-(z:Zone)
                     WHERE e.disruption_risk > 0.4
                     RETURN e.date        AS event_date,
                            e.intensity   AS solar_intensity,
-                           r.name        AS affected_region,
+                           mr.name       AS macro_region,
+                           sr.name       AS state,
                            z.name        AS vulnerable_zone,
                            e.description AS impact_description
                     ORDER BY e.disruption_risk DESC
@@ -355,18 +441,18 @@ def graphrag_node(state: AstroGeoState) -> AstroGeoState:
                 """).data()
 
             elif state['query_domain'] == 'cross':
-                # Full multi-hop: asteroids → location → zone → change
+                # Full multi-hop: asteroids → country → macro → state → zone → change
                 results = session.run("""
-                    MATCH (a:Asteroid)-[:APPROACH_RISK]->(l:Location)
-                          <-[:LOCATED_IN]-(z:Zone)
-                          -[:SHOWS_CHANGE]->(c:LandCoverChange)
-                    RETURN a.designation  AS asteroid,
-                           a.risk_category AS risk,
-                           l.region        AS location,
-                           z.name          AS zone,
-                           c.type          AS change_type,
-                           c.confidence    AS confidence
-                    ORDER BY c.confidence DESC
+                    MATCH (a:Asteroid)-[:APPROACH_RISK]->(c:Country {name: 'India'})
+                          <-[:PART_OF]-(mr:Region)<-[:PART_OF]-(sr:Region)
+                          <-[:PART_OF]-(z:Zone)-[:SHOWS_CHANGE]->(lcc:LandCoverChange)
+                    RETURN a.designation   AS asteroid,
+                           a.risk_category  AS risk,
+                           sr.name          AS state,
+                           z.name           AS zone,
+                           lcc.type         AS change_type,
+                           lcc.confidence   AS confidence
+                    ORDER BY lcc.confidence DESC
                     LIMIT 5
                 """).data()
 
