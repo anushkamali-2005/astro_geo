@@ -28,6 +28,7 @@
     "versor": "^0.2.0"
   },
   "devDependencies": {
+    "@netlify/plugin-nextjs": "^5.15.9",
     "autoprefixer": "^10.4.16",
     "eslint": "^9.0.0",
     "eslint-config-next": "^16.2.3",
