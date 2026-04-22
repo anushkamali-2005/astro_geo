@@ -15,6 +15,16 @@ By containerizing the stack with Docker, orchestrating CI/CD pipelines, and inte
 
 ---
 
+### 5. Model Explainability & Verifiability (The "XAI" Tier)
+We solve the "Black Box" problem using a two-layered observability stack:
+- **SHAP Feature Impact Heatmap**: Provides a global view of model behavior. It maps feature contributions across risk categories, allowing experts to verify that the model is using scientifically sound features (e.g., NDVI delta for vegetation loss) rather than spurious correlations.
+- **Risk Stratification Matrix**: A hazard-transition grid that maps Anomaly Scores against Risk Scores. This provides mission operators with a clear "Safe" to "Critical" escalation path.
+- **On-Chain Evidence Chains**: Every prediction is cryptographically signed and stored on an immutable ledger, ensuring 100% verifiability of the AI's logic from ingestion to inference.
+
+---
+
+### 6. Summary of Architectural Impact
+
 ## 2. Architectural Decisions & Trade-offs
 
 **(When speaking to an expert, be ready to defend *why* you chose your stack)**

@@ -9,7 +9,15 @@
 
 "Hi! I handle MLOps and Deployment for AstroGeo. Our team built really smart AI models to predict droughts and make sure space rocket launches are safe. But a smart AI is useless if it crashes when too many people try to use it. 
 
-My job was to take the AI from our laptops and put it securely on the internet so anyone can use it. I built the 'plumbing' that keeps the system online 99.9% of the time, tracks how smart our AI is getting, and raises an alarm if anything breaks. In short, I make sure our brilliant AI actually works in the real world."
+My job was to take the AI from our laptops.
+
+### 3. Proof of the "Brain" (Model Explainability)
+We don't just ask people to trust the AI; we prove it works.
+- **The Heatmap**: We have a "Transparency Map" (SHAP Heatmap) that shows exactly which ingredients the AI used to make a decision. If it predicts a drought, you can see that it looked at "Low Rainfall" and "Soil Moisture," not just random numbers.
+- **The Risk Grid**: A simple traffic-light system (Risk Matrix) that categorizes items from "Safe" to "Critical," making it easy for anyone to know what needs attention *right now*.
+- **The Digital Signature**: Every prediction is given a unique digital fingerprint so it can't be changed or faked later.
+
+I built the 'plumbing' that keeps the system online 99.9% of the time, tracks how smart our AI is getting, and raises an alarm if anything breaks. In short, I make sure our brilliant AI actually works in the real world."
 
 ---
 
