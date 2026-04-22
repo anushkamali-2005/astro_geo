@@ -17,3 +17,10 @@ scrape_configs:
   - job_name: "mlflow"
     static_configs:
       - targets: ["mlflow:5000"]
+
+  # Production backend on Render (scrape /metrics over HTTPS)
+  - job_name: "astrogeo_render_api"
+    scheme: https
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["astrogeo-backend.onrender.com"]

@@ -1,10 +1,10 @@
 {
-  "model_file": "geospatial_rf_model.pkl",
+  "model_file": "../models/geospatial_rf_model.pkl",
   "training_rows": 17280,
   "test_rows": 4320,
   "test_accuracy": 0.8287,
-  "cv_accuracy_mean": 0.8243,
-  "cv_accuracy_std": 0.0049,
+  "cv_accuracy_mean": 0.8244,
+  "cv_accuracy_std": 0.0052,
   "per_class_metrics": {
     "Stable vegetation": {
       "precision": 0.8061,
@@ -34,5 +34,5 @@
     "Urban growth": "Delta total\n(2018\u21922024)",
     "Stable other": "NDVI 2020"
   },
-  "trained_at": "2026-03-30T17:03:18.353261+00:00"
+  "trained_at": "2026-04-21T23:45:21.105847+00:00"
 }

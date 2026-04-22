@@ -1,5 +1,6 @@
 # backend/pipelines/04_train_launch_model.py
 # RF + LogReg ensemble with SMOTE oversampling.
+# DagsHub/MLflow tracking: logs params, metrics, artifacts, and registers model.
 # Optimised for failure recall — conservative threshold (0.35).
 # Pure weather signal — no mission type features.
 
@@ -19,9 +20,26 @@ from sklearn.metrics import (
 )
 from imblearn.over_sampling import SMOTE
 from dotenv import load_dotenv
+import time
 
 dotenv_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), '.env')
 load_dotenv(dotenv_path)
+
+# --- [TRACKING] ---
+try:
+    import mlflow
+    import mlflow.sklearn
+    from backend.pipelines.dagshub_tracker import init_dagshub_tracking
+except ImportError:
+    try:
+        from dagshub_tracker import init_dagshub_tracking
+        import mlflow
+        import mlflow.sklearn
+    except ImportError:
+        mlflow = None
+        init_dagshub_tracking = None
+        print("[TRACKING] mlflow/dagshub_tracker not available — tracking disabled")
+# --- [TRACKING] ---
 
 OUTPUT_DIR = os.path.join(
     os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
@@ -327,20 +345,78 @@ def main():
     print("SMOTE + Conservative Threshold")
     print("=" * 55)
 
-    df                                  = load_training_data()
-    df, feature_cols                    = engineer_features(df)
-    (ensemble, scaler, acc, roc_auc,
-     f1_failure, cv_auc, feature_cols)  = train_model(df, feature_cols)
-    meta                                = save_model(
-        ensemble, scaler, acc, roc_auc,
-        f1_failure, cv_auc, feature_cols
+    # --- [TRACKING] Initialize DagsHub/MLflow ---
+    tracking_ctx = (
+        init_dagshub_tracking(
+            experiment_name="astrogeo-launch-v2-smote",
+            run_name="launch_v2_smote_train",
+            tags={"model": "RF+LR+SMOTE", "version": "v2.0"},
+        )
+        if init_dagshub_tracking
+        else __import__("contextlib").nullcontext()
     )
-    save_predictions(df, ensemble, scaler, feature_cols)
 
-    print("\n" + "=" * 55)
-    print("✅ Launch model v2.0 complete!")
-    print(f"   ROC-AUC:       {meta['roc_auc']:.3f}  (target: >0.65)")
-    print(f"   F1 (Failures): {meta['f1_failure']:.3f}  (target: >0.30)")
+    with tracking_ctx:
+        t0 = time.time()
+
+        df                                  = load_training_data()
+        df, feature_cols                    = engineer_features(df)
+        (ensemble, scaler, acc, roc_auc,
+         f1_failure, cv_auc, feature_cols)  = train_model(df, feature_cols)
+        meta                                = save_model(
+            ensemble, scaler, acc, roc_auc,
+            f1_failure, cv_auc, feature_cols
+        )
+        save_predictions(df, ensemble, scaler, feature_cols)
+
+        train_duration = time.time() - t0
+
+        # --- [TRACKING] Log everything ---
+        if mlflow:
+            try:
+                # Params
+                mlflow.log_params({
+                    "model_type": "RF+LR_VotingClassifier_soft",
+                    "oversampling": "SMOTE_k3",
+                    "decision_threshold": DECISION_THRESHOLD,
+                    "rf_n_estimators": 200,
+                    "rf_max_depth": 4,
+                    "rf_min_samples_leaf": 5,
+                    "lr_C": 0.1,
+                    "lr_max_iter": 1000,
+                    "n_features": len(feature_cols),
+                    "n_launches": len(df),
+                    "training_site": "Sriharikota",
+                    "data_range": "1980-2026",
+                })
+
+                # Metrics
+                mlflow.log_metrics({
+                    "test_accuracy": meta["test_accuracy"],
+                    "roc_auc": meta["roc_auc"],
+                    "f1_failure": meta["f1_failure"],
+                    "cv_roc_auc": meta["cv_roc_auc"],
+                    "train_duration_s": round(train_duration, 2),
+                })
+
+                # Artifacts
+                meta_path = os.path.join(OUTPUT_DIR, "launch_model_meta.json")
+                if os.path.exists(meta_path):
+                    mlflow.log_artifact(meta_path, "metadata")
+
+                # Register model
+                mlflow.sklearn.log_model(
+                    ensemble, "model",
+                    registered_model_name="astrogeo-launch-v2",
+                )
+                print("[TRACKING] ✅ All metrics, params, and model logged to DagsHub!")
+            except Exception as e:
+                print(f"[TRACKING] ⚠️  Logging failed (non-fatal): {e}")
+
+        print("\n" + "=" * 55)
+        print("✅ Launch model v2.0 complete!")
+        print(f"   ROC-AUC:       {meta['roc_auc']:.3f}  (target: >0.65)")
+        print(f"   F1 (Failures): {meta['f1_failure']:.3f}  (target: >0.30)")
 
 
 if __name__ == '__main__':

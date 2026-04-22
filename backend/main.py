@@ -19,7 +19,7 @@ from slowapi.middleware import SlowAPIMiddleware
 from slowapi.util import get_remote_address
 
 from backend.config import settings
-from backend.routers import asteroids, donki, eonet, iss, isro
+from backend.routers import asteroids, donki, eonet, iss, isro, explain
 from backend.db.pools import (
     close_neo4j_driver,
     dispose_sqlalchemy_engine,
@@ -99,6 +99,9 @@ app.include_router(isro.router)
 app.include_router(asteroids.router)
 app.include_router(donki.router, prefix="/api/v1/donki")
 app.include_router(eonet.router)
+app.include_router(explain.router)
+
+
 
 
 def _self_base_url() -> str:

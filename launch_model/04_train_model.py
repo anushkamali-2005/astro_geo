@@ -504,12 +504,18 @@ with _tracking_ctx:
     # ══════════════════════════════════════════════════
     # LOG: Artifacts to Trackers
     # ══════════════════════════════════════════════════
+    total_duration = time.time() - TRAIN_START
     if TRACKING_ENABLED:
         # MLflow
         if mlflow:
+            mlflow.log_metric("train_duration_s", total_duration)
             mlflow.sklearn.log_model(ensemble, "model", registered_model_name="astrogeo-launch-go-nogo")
             mlflow.log_artifact(importance_plot_path, "plots")
             mlflow.log_artifact(shap_plot_path, "plots")
+            for prefix in models_to_eval.keys():
+                cm_file = f"plots/confusion_matrix_{prefix.rstrip('_')}.png"
+                if os.path.exists(cm_file):
+                    mlflow.log_artifact(cm_file, "plots")
             
         # WandB
         if wandb:

@@ -82,6 +82,11 @@ export const api = {
   verifyBatch:   (n = 10) => get(`/api/verify/batch/recent?limit=${n}`),
   getModelCards: ()       => get('/api/verify/model-cards'),
 
+  // ── Explainability ────────────────────────────────────────
+  getShapHeatmap: () => get('/api/explain/shap-heatmap'),
+  getRiskMatrix:  () => get('/api/explain/risk-matrix'),
+
+
   // ── Solar Risk & Events ───────────────────────────────────
   getSolarRisk:   () => get('/api/launch/solar-risk'),
   getSolarEvents: () => get('/api/v1/donki/events'),
