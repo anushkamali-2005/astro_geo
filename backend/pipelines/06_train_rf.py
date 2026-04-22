@@ -1,5 +1,6 @@
 # 06_train_rf.py
 # AstroGeo — Train Random Forest on India NDVI training data
+# DagsHub/MLflow tracking: logs params, metrics, SHAP artifacts, registers model.
 # Run AFTER 05c_download_and_merge.py produces the combined CSV
 
 import os
@@ -16,6 +17,23 @@ from sklearn.metrics import (
     classification_report, confusion_matrix,
     ConfusionMatrixDisplay
 )
+import time
+
+# --- [TRACKING] ---
+try:
+    from dagshub_tracker import init_dagshub_tracking
+    import mlflow
+    import mlflow.sklearn
+except ImportError:
+    try:
+        from backend.pipelines.dagshub_tracker import init_dagshub_tracking
+        import mlflow
+        import mlflow.sklearn
+    except ImportError:
+        mlflow = None
+        init_dagshub_tracking = None
+        print("[TRACKING] mlflow/dagshub_tracker not available — tracking disabled")
+# --- [TRACKING] ---
 
 TRAINING_CSV = '../data/ndvi_training_india_combined.csv'
 MODEL_FILE   = '../models/geospatial_rf_model.pkl'
@@ -131,7 +149,8 @@ plt.close()
 # ── SHAP analysis ────────────────────────────────────────────
 print('\nRunning SHAP analysis (TreeExplainer)...')
 # Use a representative sample — 800 rows is enough for stable SHAP values
-sample_idx  = np.random.RandomState(42).choice(len(X_train), 800, replace=False)
+num_samples = min(len(X_train), 800)
+sample_idx  = np.random.RandomState(42).choice(len(X_train), num_samples, replace=False)
 X_sample    = X_train[sample_idx]
 
 explainer   = shap.TreeExplainer(model)
@@ -287,6 +306,79 @@ results = {
 
 with open(RESULTS_FILE, 'w') as f:
     json.dump(results, f, indent=2)
+
+
+# ── [TRACKING] Log to DagsHub/MLflow ─────────────────────────
+if init_dagshub_tracking:
+    tracking_ctx = init_dagshub_tracking(
+        experiment_name="astrogeo-vegetation-ndvi",
+        run_name="vegetation_rf_train",
+        tags={"model": "RandomForest", "domain": "geospatial"},
+    )
+    with tracking_ctx:
+        try:
+            # Params
+            mlflow.log_params({
+                "model_type": "RandomForestClassifier",
+                "n_estimators": 200,
+                "max_depth": 10,
+                "min_samples_leaf": 5,
+                "class_weight": "balanced",
+                "n_features": len(FEATURE_COLS),
+                "feature_list": str(FEATURE_COLS),
+                "n_classes": len(present_class_names),
+                "class_names": str(present_class_names),
+                "training_rows": len(X_train),
+                "test_rows": len(X_test),
+                "training_csv": TRAINING_CSV,
+            })
+
+            # Metrics
+            mlflow.log_metrics({
+                "test_accuracy": round(overall_accuracy, 4),
+                "cv_accuracy_mean": round(float(cv_scores.mean()), 4),
+                "cv_accuracy_std": round(float(cv_scores.std()), 4),
+            })
+
+            # Per-class metrics
+            for cls in present_class_names:
+                safe_cls = cls.replace(" ", "_").lower()
+                mlflow.log_metrics({
+                    f"{safe_cls}_precision": round(report[cls]["precision"], 4),
+                    f"{safe_cls}_recall": round(report[cls]["recall"], 4),
+                    f"{safe_cls}_f1": round(report[cls]["f1-score"], 4),
+                })
+
+            # SHAP top features per class
+            for c, cls in enumerate(present_class_names):
+                safe_cls = cls.replace(" ", "_").lower()
+                top_feat_idx = int(np.argmax(mean_abs_shap[c]))
+                mlflow.log_param(
+                    f"shap_top_feature_{safe_cls}",
+                    FEATURE_DISPLAY[top_feat_idx],
+                )
+
+            # Artifacts
+            for artifact_path in [
+                '../outputs/confusion_matrix.png',
+                '../outputs/shap_heatmap.png',
+                '../outputs/shap_feature_importance_bar.png',
+                '../outputs/shap_beeswarm_all_classes.png',
+                SHAP_CSV,
+                RESULTS_FILE,
+            ]:
+                if os.path.exists(artifact_path):
+                    mlflow.log_artifact(artifact_path, "outputs")
+
+            # Register model
+            mlflow.sklearn.log_model(
+                model, "model",
+                registered_model_name="astrogeo-vegetation-rf",
+            )
+            print("[TRACKING] ✅ Vegetation NDVI RF — logged to DagsHub!")
+        except Exception as e:
+            print(f"[TRACKING] ⚠️  Logging failed (non-fatal): {e}")
+
 
 print(f'\nResults saved: {RESULTS_FILE}')
 print('\n' + '=' * 55)

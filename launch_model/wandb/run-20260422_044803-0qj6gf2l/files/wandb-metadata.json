@@ -1,0 +1,28 @@
+{
+  "os": "Windows-11-10.0.26200-SP0",
+  "python": "CPython 3.13.9",
+  "startedAt": "2026-04-21T23:18:03.815271Z",
+  "program": "C:\\Users\\aksha\\Downloads\\Astrogeo-Graphrag\\launch_model\\04_train_model.py",
+  "codePath": "launch_model\\04_train_model.py",
+  "codePathLocal": "04_train_model.py",
+  "git": {
+    "remote": "https://github.com/anushkamali-2005/astro_geo.git",
+    "commit": "4a00434f75beee65807c1b35a58c449ec380b8bc"
+  },
+  "email": "anushkamalilive@gmail.com",
+  "root": "C:\\Users\\aksha\\Downloads\\Astrogeo-Graphrag\\launch_model",
+  "host": "Akshay_Laptop",
+  "executable": "C:\\Users\\aksha\\anaconda3\\python.exe",
+  "cpu_count": 10,
+  "cpu_count_logical": 12,
+  "disk": {
+    "/": {
+      "total": "494376316928",
+      "used": "335866683392"
+    }
+  },
+  "memory": {
+    "total": "16847876096"
+  },
+  "writerId": "omahmy3azdi5gpw7kcp90uenx9qc6g6n"
+}

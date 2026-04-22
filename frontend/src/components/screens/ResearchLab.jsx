@@ -13,6 +13,9 @@ import {
 } from 'recharts'
 import { api } from '@/lib/api'
 import { usePersona } from '@/hooks/usePersona'
+import ShapHeatmap from '../dashboard/ShapHeatmap'
+import RiskMatrix from '../dashboard/RiskMatrix'
+
 
 function cn(...classes) {
   return classes.filter(Boolean).join(' ')
@@ -515,15 +518,86 @@ function AuditLogTab() {
   )
 }
 
+// ── ExplainabilityTab ──────────────────────────────────────────
+function ExplainabilityTab() {
+  const [heatmapData, setHeatmapData] = useState(null)
+  const [matrixData, setMatrixData] = useState(null)
+  const [loading, setLoading] = useState(true)
+
+  useEffect(() => {
+    async function loadXaiData() {
+      try {
+        const [h, m] = await Promise.all([
+          api.getShapHeatmap(),
+          api.getRiskMatrix()
+        ])
+        setHeatmapData(h)
+        setMatrixData(m)
+      } catch (e) {
+        console.error("Failed to load XAI data", e)
+      } finally {
+        setLoading(false)
+      }
+    }
+    loadXaiData()
+  }, [])
+
+  if (loading) {
+    return (
+      <div className="h-96 flex flex-col items-center justify-center space-y-4">
+        <div className="w-12 h-12 border-4 border-indigo-500/30 border-t-indigo-500 rounded-full animate-spin" />
+        <p className="text-slate-400 font-mono text-sm">Synthesizing Explainability Models...</p>
+      </div>
+    )
+  }
+
+  return (
+    <motion.div 
+      initial={{ opacity: 0, y: 10 }} 
+      animate={{ opacity: 1, y: 0 }} 
+      exit={{ opacity: 0, y: -10 }} 
+      className="space-y-12 pb-20"
+    >
+      <section>
+        <div className="mb-6">
+           <h2 className="text-2xl font-display font-bold text-white mb-2">🧠 SHAP Feature Impact Heatmap</h2>
+           <p className="text-slate-400 max-w-3xl text-sm italic">
+             "Proving the model is not a black box." This heatmap visualizes how each feature contributes to different risk categories. 
+             Red cells indicate features that strongly drive the predicted outcome.
+           </p>
+        </div>
+        <GlassPanel className="p-8 border-indigo-500/20 bg-indigo-900/5">
+          <ShapHeatmap data={heatmapData} />
+        </GlassPanel>
+      </section>
+
+      <section>
+        <div className="mb-6">
+           <h2 className="text-2xl font-display font-bold text-white mb-2">📊 Risk Stratification Matrix</h2>
+           <p className="text-slate-400 max-w-3xl text-sm italic">
+             A high-level view of how asteroid anomaly scores and risk scores relate to each other, segmented by hazard categories.
+           </p>
+        </div>
+        <GlassPanel className="p-8 border-cyan-500/20 bg-cyan-900/5">
+          <RiskMatrix data={matrixData} />
+        </GlassPanel>
+      </section>
+    </motion.div>
+  )
+}
+
+
 // ── Main export ──────────────────────────────────────────────────
 export default function ResearchLab() {
   const { visibility } = usePersona()
 
   const allTabs = [
-    { value: 'verify', label: '✅ Verify Predictions', alwaysShow: true },
-    { value: 'models', label: '🧠 Model Cards',        alwaysShow: false, requiresKey: 'showModelCards' },
-    { value: 'audit',  label: '🔗 Audit Log',          alwaysShow: false, requiresKey: 'showAuditLog' },
+    { value: 'verify',  label: '✅ Verify Predictions', alwaysShow: true },
+    { value: 'explain', label: '🧠 Explainable AI',    alwaysShow: true },
+    { value: 'models',  label: '🧠 Model Cards',        alwaysShow: false, requiresKey: 'showModelCards' },
+    { value: 'audit',   label: '🔗 Audit Log',          alwaysShow: false, requiresKey: 'showAuditLog' },
   ]
+
 
   const tabs = allTabs.filter(t => t.alwaysShow || visibility[t.requiresKey])
   const [activeTab, setActiveTab] = useState('verify')
@@ -567,10 +641,12 @@ export default function ResearchLab() {
         </div>
 
         <AnimatePresence mode="wait">
-          {safeTab === 'verify' && <VerifyTab key="verify" />}
-          {safeTab === 'models' && visibility.showModelCards && <ModelCardsTab key="models" />}
-          {safeTab === 'audit'  && visibility.showAuditLog   && <AuditLogTab  key="audit" />}
+          {safeTab === 'verify'  && <VerifyTab key="verify" />}
+          {safeTab === 'explain' && <ExplainabilityTab key="explain" />}
+          {safeTab === 'models'  && visibility.showModelCards && <ModelCardsTab key="models" />}
+          {safeTab === 'audit'   && visibility.showAuditLog   && <AuditLogTab  key="audit" />}
         </AnimatePresence>
+
 
       </div>
     </div>

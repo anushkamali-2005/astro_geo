@@ -1,9 +1,21 @@
 # backend/responsible_ai/shap_asteroid.py
 # Retrains Isolation Forest + KMeans in-memory from saved feature CSV,
 # generates SHAP analysis, saves plots + summary JSON to data/shap/asteroid/
+# DagsHub/MLflow tracking: logs params, SHAP plots, and registers both models.
 
 import pandas as pd
 import numpy as np
+import sys
+import os
+
+# Fix Windows cp1252 crash when printing emojis
+os.environ.setdefault("PYTHONIOENCODING", "utf-8")
+if hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(encoding="utf-8")
+        sys.stderr.reconfigure(encoding="utf-8")
+    except Exception:
+        pass
 import matplotlib.pyplot as plt
 import matplotlib
 matplotlib.use('Agg')  # non-interactive backend
@@ -17,6 +29,22 @@ from dotenv import load_dotenv
 
 dotenv_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), '.env')
 load_dotenv(dotenv_path)
+
+# --- [TRACKING] ---
+try:
+    from dagshub_tracker import init_dagshub_tracking
+    import mlflow
+    import mlflow.sklearn
+except ImportError:
+    try:
+        from backend.pipelines.dagshub_tracker import init_dagshub_tracking
+        import mlflow
+        import mlflow.sklearn
+    except ImportError:
+        mlflow = None
+        init_dagshub_tracking = None
+        print("[TRACKING] mlflow/dagshub_tracker not available — tracking disabled")
+# --- [TRACKING] ---
 
 # ── Config ────────────────────────────────────────────────────
 FEATURES_CSV  = os.path.join(
@@ -292,26 +320,82 @@ def main():
     print("Models: Isolation Forest + KMeans")
     print("=" * 55)
 
-    # 1. Load
-    df, feature_cols = load_features()
-
-    # 2. Retrain
-    iso, km, X, X_raw, scaler, feature_cols = retrain_models(
-        df, feature_cols
+    # --- [TRACKING] Initialize DagsHub/MLflow ---
+    tracking_ctx = (
+        init_dagshub_tracking(
+            experiment_name="astrogeo-asteroid-anomaly",
+            run_name="asteroid_unsupervised_train",
+            tags={"domain": "space", "model_types": "IsolationForest+KMeans"},
+        )
+        if init_dagshub_tracking
+        else __import__("contextlib").nullcontext()
     )
 
-    # 3. SHAP — Isolation Forest
-    iso_shap, iso_importance, _ = shap_isolation_forest(
-        iso, X, X_raw, feature_cols
-    )
+    with tracking_ctx:
+        # 1. Load
+        df, feature_cols = load_features()
 
-    # 4. SHAP — KMeans
-    km_shap, km_importance = shap_kmeans(
-        km, X, X_raw, feature_cols
-    )
+        # 2. Retrain
+        iso, km, X, X_raw, scaler, feature_cols = retrain_models(
+            df, feature_cols
+        )
 
-    # 5. Save summary
-    summary = save_summary(iso_importance, km_importance, feature_cols)
+        # 3. SHAP — Isolation Forest
+        iso_shap, iso_importance, _ = shap_isolation_forest(
+            iso, X, X_raw, feature_cols
+        )
+
+        # 4. SHAP — KMeans
+        km_shap, km_importance = shap_kmeans(
+            km, X, X_raw, feature_cols
+        )
+
+        # 5. Save summary
+        summary = save_summary(iso_importance, km_importance, feature_cols)
+
+        # --- [TRACKING] Log everything ---
+        if mlflow:
+            try:
+                # Params
+                mlflow.log_params({
+                    "isoforest_n_estimators": 100,
+                    "isoforest_contamination": 0.05,
+                    "kmeans_n_clusters": 3,
+                    "kmeans_n_init": 10,
+                    "n_features": len(feature_cols),
+                    "n_asteroids": len(df),
+                    "feature_list": str(feature_cols),
+                })
+
+                # Top Feature metrics
+                for rank, item in enumerate(summary['isolation_forest']['top_features'][:3]):
+                    mlflow.log_param(f"isoforest_top_feat_{rank+1}", item['feature'])
+                for rank, item in enumerate(summary['kmeans']['top_features'][:3]):
+                    mlflow.log_param(f"kmeans_top_feat_{rank+1}", item['feature'])
+
+                # Artifacts
+                for artifact_path in [
+                    os.path.join(OUTPUT_DIR, 'iso_feature_importance.png'),
+                    os.path.join(OUTPUT_DIR, 'iso_beeswarm.png'),
+                    os.path.join(OUTPUT_DIR, 'kmeans_feature_importance.png'),
+                    os.path.join(OUTPUT_DIR, 'kmeans_cluster_distribution.png'),
+                    os.path.join(OUTPUT_DIR, 'asteroid_shap_summary.json'),
+                ]:
+                    if os.path.exists(artifact_path):
+                        mlflow.log_artifact(artifact_path, "outputs")
+
+                # Register models
+                mlflow.sklearn.log_model(
+                    iso, "isoforest_model",
+                    registered_model_name="astrogeo-asteroid-isoforest",
+                )
+                mlflow.sklearn.log_model(
+                    km, "kmeans_model",
+                    registered_model_name="astrogeo-asteroid-kmeans",
+                )
+                print("[TRACKING] ✅ Asteroid Models — logged to DagsHub!")
+            except Exception as e:
+                print(f"[TRACKING] ⚠️  Logging failed (non-fatal): {e}")
 
     print("\n" + "=" * 55)
     print("✅ SHAP analysis complete!")
