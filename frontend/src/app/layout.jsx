@@ -20,10 +20,10 @@ export default function RootLayout({ children }) {
             <div className="relative z-10">
               <DashboardLayout>{children}</DashboardLayout>
             </div>
+            {/* Floating AI chat widget — present on all pages */}
+            <ChatWidget />
           </PersonaShell>
         </AppShellProvider>
-        {/* Floating AI chat widget — present on all pages */}
-        <ChatWidget />
       </body>
     </html>
   )

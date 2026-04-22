@@ -699,8 +699,10 @@ End with a one-sentence action recommendation if relevant.
         data_window = solar_ctx.get('data_window', 'all-time highest risk')
         data_as_of  = solar_ctx.get('data_as_of', 'unknown')
 
+        domain_flag = state.get('query_domain', 'unknown')
         if temporal == 'recent':
-            temporal_instruction = f"""
+            if domain_flag in ('solar', 'cross'):
+                temporal_instruction = f"""
 IMPORTANT — TEMPORAL FRAMING:
 The user is asking about UPCOMING or APPROACHING solar events.
 AstroGeo does NOT have a real-time prediction API. Instead, these results
@@ -714,6 +716,16 @@ Frame your answer correctly:
 - If the most recent events are moderate (M-class), say that; do not escalate to 'X-class danger'.
 - End with: "AstroGeo's dataset is updated from NASA DONKI. For real-time space weather
   forecasts, also check NOAA Space Weather Prediction Center (swpc.noaa.gov)."
+"""
+            else:
+                temporal_instruction = f"""
+IMPORTANT — TEMPORAL FRAMING:
+The user is asking about UPCOMING or APPROACHING {domain_flag} events.
+AstroGeo analyzes provided evidence.
+Frame your answer correctly:
+- Say "Based on the most recent {domain_flag} data in our records…"
+- Do NOT say an old event is "approaching" or "anticipated" — cite its actual date and specify it ALREADY HAPPENED.
+- **CRITICAL**: Today's year is {datetime.now().year}. Events from 2024 or earlier are absolutely in the PAST. Never describe a 2024 event as "future" or "anticipated".
 """
         elif temporal == 'historical':
             temporal_instruction = """
